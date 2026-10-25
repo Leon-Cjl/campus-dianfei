@@ -48,6 +48,10 @@ $env:ANDROID_SDK_ROOT = "$env:LOCALAPPDATA\Android\Sdk"           # 需要 build
 - `node tests/preview-server.cjs`：在电脑浏览器里用演示数据预览界面（http://localhost:8765）。
 - `tests/*-acceptance.cjs`、`cold-login-test.cjs`、`profile-query.cjs`：真机验收，需要诊断包和 adb，诊断只输出状态和计数，不输出账号密码。
 
+## 参与开发
+
+由 [Leon-Cjl](https://github.com/Leon-Cjl) 主导，AI 编程助手 [Claude](https://claude.com/claude-code)（Anthropic）、[Codex](https://openai.com/codex)（OpenAI）和 [DeepSeek](https://www.deepseek.com) 参与了代码编写。
+
 ## 许可证
 
 代码以 [MIT](LICENSE) 许可证开源。`app/assets/donate.png` 是作者的收款码，请勿在你自己发布的版本里沿用。
