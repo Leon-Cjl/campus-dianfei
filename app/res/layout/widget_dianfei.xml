@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 桌面小组件：剩余电费 + 估算可用天数 + 宿舍 + 更新时间。点按打开应用（过期会自动刷新）。 -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/w_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@drawable/widget_bg"
+    android:padding="14dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical">
+        <ImageView
+            android:layout_width="16dp"
+            android:layout_height="16dp"
+            android:src="@drawable/ic_stat_bolt"
+            android:tint="@color/widget_accent"
+            android:contentDescription="@null" />
+        <TextView
+            android:id="@+id/w_label"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginStart="6dp"
+            android:text="剩余电费"
+            android:maxLines="1"
+            android:textColor="@color/widget_muted"
+            android:textSize="12sp" />
+        <TextView
+            android:id="@+id/w_room"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="@color/widget_muted"
+            android:textSize="12sp"
+            android:maxLines="1" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/w_balance"
+        android:layout_width="wrap_content"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:gravity="center_vertical"
+        android:text="—"
+        android:textColor="@color/widget_text"
+        android:textSize="30sp"
+        android:textStyle="bold"
+        android:maxLines="1" />
+
+    <TextView
+        android:id="@+id/w_days"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textColor="@color/widget_text"
+        android:textSize="13sp"
+        android:textStyle="bold"
+        android:maxLines="1" />
+
+    <TextView
+        android:id="@+id/w_time"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:textColor="@color/widget_muted"
+        android:textSize="11sp"
+        android:maxLines="1" />
+</LinearLayout>

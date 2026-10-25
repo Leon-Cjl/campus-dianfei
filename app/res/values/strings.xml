@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">校园电费</string>
+    <string name="widget_desc">宿舍剩余电费和预计还能用几天</string>
+</resources>

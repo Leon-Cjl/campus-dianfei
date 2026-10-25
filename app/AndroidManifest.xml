@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.qlu.dianfei"
+    android:versionCode="23"
+    android:versionName="1.6.4">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- 余额预警、好几天没查时的提醒；第一次查到余额后询问时才申请 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 重启后重新排每日估算提醒的闹钟，设完即退出，不常驻 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- 「去微信充值」需要能找到并打开微信 -->
+    <queries>
+        <package android:name="com.tencent.mm" />
+    </queries>
+
+    <application
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:label="@string/app_name"
+        android:usesCleartextTraffic="false"
+        android:supportsRtl="true"
+        android:theme="@style/AppTheme">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <receiver android:name=".CheckReceiver" android:exported="false" />
+        <!-- 每日后台查一次余额：只由系统按需唤起，查完即退出，不常驻 -->
+        <service android:name=".CheckJob" android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+        <!-- 分享余额卡片：只把应用缓存里刚生成的那张图临时授权给你选的应用 -->
+        <provider android:name=".ShareProvider" android:authorities="com.qlu.dianfei.share"
+            android:exported="false" android:grantUriPermissions="true" />
+        <receiver android:name=".BootReceiver" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- 桌面小组件：不定时自更新，由应用在查到新读数 / 每日估算时刷新 -->
+        <receiver android:name=".DianfeiWidget" android:exported="true" android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/dianfei_widget_info" />
+        </receiver>
+    </application>
+</manifest>

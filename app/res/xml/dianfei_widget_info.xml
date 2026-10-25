@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 不定时自更新（updatePeriodMillis=0）：查到新读数、每日估算提醒、打开应用时由应用主动刷新，不额外唤醒手机。 -->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:minWidth="110dp"
+    android:minHeight="110dp"
+    android:targetCellWidth="2"
+    android:targetCellHeight="2"
+    android:resizeMode="horizontal|vertical"
+    android:updatePeriodMillis="0"
+    android:initialLayout="@layout/widget_dianfei"
+    android:previewLayout="@layout/widget_dianfei"
+    android:previewImage="@mipmap/ic_launcher"
+    android:description="@string/widget_desc"
+    android:widgetCategory="home_screen" />
