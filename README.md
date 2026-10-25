@@ -50,7 +50,7 @@ $env:ANDROID_SDK_ROOT = "$env:LOCALAPPDATA\Android\Sdk"           # 需要 build
 
 ## 参与开发
 
-由 [Leon-Cjl](https://github.com/Leon-Cjl) 主导，AI 编程助手 [Claude](https://claude.com/claude-code)（Anthropic）、[Codex](https://openai.com/codex)（OpenAI）和 [DeepSeek](https://www.deepseek.com) 参与了代码编写。
+由 [Leon-Cjl](https://github.com/Leon-Cjl) 主导，AI 编程助手 [Claude](https://claude.com/claude-code)（Anthropic）、[Codex](https://openai.com/codex)（OpenAI）、[Gemini](https://gemini.google.com)（Google）和 [DeepSeek](https://www.deepseek.com) 参与了代码编写。
 
 ## 许可证
 
