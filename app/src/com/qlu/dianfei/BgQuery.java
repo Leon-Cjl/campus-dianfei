@@ -1,10 +1,5 @@
 package com.qlu.dianfei;
 
-import android.app.job.JobInfo;
-import android.app.job.JobParameters;
-import android.app.job.JobScheduler;
-import android.app.job.JobService;
-import android.content.ComponentName;
 import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
@@ -20,79 +15,77 @@ import android.webkit.WebViewClient;
 import org.json.JSONObject;
 
 /**
- * 每日后台查询：每日提醒的闹钟到点后由 CheckReceiver 排进来，等有网时系统唤起一次。
+ * 每日后台查询：每日提醒的闹钟到点时由 CheckReceiver 直接调用。
  * 在看不见的网页里走一遍和打开应用时一样的流程（学校首页 → 自动登录 → 校园充值 → 余额页），抓到余额就存下，
- * 再按真实读数决定要不要提醒。约 15 秒，最多 75 秒，查完就退出，不常驻。
+ * 再按真实读数决定要不要提醒。约 15 秒，最多 50 秒（闹钟广播最多给 60 秒），查完就退出，不常驻。
+ * 不用 JobScheduler：小米等系统会冻结退到后台的进程，排进去的任务实测一直等到下次打开应用才执行；闹钟广播能把进程唤醒。
  *
  * 只在这些条件都满足时查：开着自动登录、密码没被学校拒绝过、已经选过宿舍、不在假期、应用不在前台。
  * 遇到验证码、密码错误、要选宿舍或任何没见过的页面一律放弃，退回按记录估算提醒；绝不点充值、支付相关的控件。
  */
-public class CheckJob extends JobService {
-    static final int JOB_ID = 7003;
-    private static final long LIMIT = 75000L, DEADLINE = 30 * 60 * 1000L;
+final class BgQuery {
+    private BgQuery() {}
+
+    private static final long LIMIT = 50000L;
 
     /** 当前正在跑的后台查询（只在主线程读写）；用户打开应用时让出 */
     private static Query running;
     /** 后台每登录一次加一：应用里记着的学校会话因此失效，下次查询要重新走首页 */
     static int logins = 0;
 
-    static boolean eligible(Context c) {
+    private static final long RECENT = 3 * 3600 * 1000L;
+
+    /** 不能 / 不必在后台查的原因；可以查返回 null。最近 3 小时查过就不再登录一遍（会把应用里的会话挤掉） */
+    static String skipReason(Context c) {
         CredentialStore cs = new CredentialStore(c);
+        long now = System.currentTimeMillis();
         String why = "0".equals(Core.pref(c, "auto", "1")) ? "off" : !cs.autoLogin() ? "no-auto-login"
                 : cs.needsAttention() ? "attention" : Core.sp(c).getString("room", "").isEmpty() ? "no-room"
-                : Core.awayNow(c, System.currentTimeMillis()) ? "away" : MainActivity.inForeground ? "foreground" : null;
+                : Core.awayNow(c, now) ? "away" : MainActivity.inForeground ? "foreground" : QueryGate.busy() ? "busy"
+                : now - Core.sp(c).getLong("lastFetch", 0) < RECENT ? "recent" : null;
         if (why != null) Log.i("dianfei", "background query skipped: " + why);
-        return why == null;
+        return why;
     }
 
-    static void schedule(Context c) { schedule(c, 0); }
+    /** 记下每日查询这次的结果，「我的」页显示：{t: 时间, r: ok / fail:原因 / skip:原因} */
+    static void record(Context c, String r) {
+        try {
+            Core.sp(c).edit().putString("bgLast", new JSONObject().put("t", System.currentTimeMillis()).put("r", r).toString()).apply();
+        } catch (Exception ignore) {}
+    }
 
-    static void schedule(Context c, long delay) {
-        JobScheduler js = (JobScheduler) c.getSystemService(Context.JOB_SCHEDULER_SERVICE);
-        if (js == null) { Core.dailyCheck(c, false); return; }
-        JobInfo job = new JobInfo.Builder(JOB_ID, new ComponentName(c, CheckJob.class))
-                .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
-                .setMinimumLatency(delay)
-                .setOverrideDeadline(delay + DEADLINE) // 半小时还没网也唤起，那时按估算提醒
-                .build();
-        if (js.schedule(job) != JobScheduler.RESULT_SUCCESS) Core.dailyCheck(c, false);
+    /** 在主线程调用：查一次，再按结果提醒、刷新小组件，最后执行 after */
+    static void run(Context c, Runnable after) {
+        if (running != null) { after.run(); return; }
+        long ticket = QueryGate.acquire("background");
+        if (ticket == 0) { record(c, "skip:busy"); after.run(); return; }
+        Context app = c.getApplicationContext();
+        running = new Query(app, ticket, r -> {
+            QueryGate.release(ticket);
+            running = null;
+            Log.i("dianfei", "background query " + r);
+            if (!Query.YIELDED.equals(r)) {
+                record(app, r);
+                Core.dailyCheck(app, Query.OK.equals(r));
+                DianfeiWidget.update(app);
+            }
+            after.run();
+        });
+        running.start();
     }
 
     /** 用户打开了应用：后台这次不查了，也不再发通知（首页已经看得到） */
     static void yield() {
         if (running != null) running.finish(Query.YIELDED);
     }
-
-    @Override
-    public boolean onStartJob(JobParameters params) {
-        if (!eligible(this) || running != null) { Core.dailyCheck(this, false); return false; }
-        running = new Query(this, r -> {
-            running = null;
-            Log.i("dianfei", "background query " + r);
-            if (!Query.YIELDED.equals(r)) {
-                Core.dailyCheck(this, Query.OK.equals(r));
-                DianfeiWidget.update(this);
-            }
-            jobFinished(params, false);
-        });
-        running.start();
-        return true;
-    }
-
-    @Override
-    public boolean onStopJob(JobParameters params) {
-        // 系统要收回（比如网断了）：放弃这次，按估算提醒
-        if (running != null) running.finish(Query.STOPPED);
-        return false;
-    }
-
     /** 看不见的学校页面 + 驱动脚本，状态处理是 MainActivity 里取数流程的精简版：不露页面，走不通就放弃 */
     static final class Query {
-        static final String OK = "ok", FAIL = "fail", YIELDED = "yielded", STOPPED = "stopped";
+        static final String OK = "ok", FAIL = "fail", YIELDED = "yielded";
         interface Done { void done(String result); }
 
         private final Context c;
         private final Done done;
+        private final long ticket;
         private final Handler h = new Handler(Looper.getMainLooper());
         private final CredentialStore credentials;
         private WebView w;
@@ -105,8 +98,9 @@ public class CheckJob extends JobService {
         private final Runnable timeout = () -> finish(FAIL + ":timeout");
         private final Runnable otherTimer = () -> finish(FAIL + ":other");
 
-        Query(Context c, Done done) {
+        Query(Context c, long ticket, Done done) {
             this.c = c.getApplicationContext();
+            this.ticket = ticket;
             this.done = done;
             credentials = new CredentialStore(this.c);
         }
@@ -133,7 +127,7 @@ public class CheckJob extends JobService {
             w.addJavascriptInterface(new Driver(), "DF");
             w.setWebViewClient(new WebViewClient() {
                 @Override public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) {
-                    return !"https".equalsIgnoreCase(r.getUrl().getScheme());
+                    return !Core.isSchoolUrl(r.getUrl().toString());
                 }
                 @Override public void onPageStarted(WebView v, String url, android.graphics.Bitmap icon) {
                     if (!finished) token = "bg:" + (++doc);
@@ -145,6 +139,7 @@ public class CheckJob extends JobService {
                 @Override public void onReceivedError(WebView v, WebResourceRequest r, WebResourceError e) {
                     if (r.isForMainFrame()) finish(FAIL + ":network");
                 }
+                @Override public boolean onRenderProcessGone(WebView v, android.webkit.RenderProcessGoneDetail d) { finish(FAIL + ":renderer"); return true; }
             });
             h.postDelayed(timeout, LIMIT);
             token = "bg:" + (++doc);
@@ -156,7 +151,7 @@ public class CheckJob extends JobService {
         }
 
         private boolean valid(String t) {
-            return !finished && t != null && t.equals(token) && Core.isSchoolUrl(w.getUrl());
+            return QueryGate.valid(ticket) && !finished && t != null && t.equals(token) && Core.isSchoolUrl(w.getUrl());
         }
 
         private class Driver {
@@ -210,6 +205,7 @@ public class CheckJob extends JobService {
 
         private void onResult(String json) {
             try {
+                if (!QueryGate.valid(ticket)) { finish(YIELDED); return; }
                 Core.saveResult(c, json);
                 Core.clearActionNotice(c);
                 finish(OK);
@@ -230,9 +226,8 @@ public class CheckJob extends JobService {
                 w = null;
             }
             CookieManager.getInstance().flush();
-            String r = result.startsWith(FAIL) ? FAIL : result;
             Log.i("dianfei", "background query detail " + result);
-            done.done(r);
+            done.done(result);
         }
     }
 }

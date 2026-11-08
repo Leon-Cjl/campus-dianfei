@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.qlu.dianfei"
-    android:versionCode="23"
-    android:versionName="1.6.4">
+    android:versionCode="27"
+    android:versionName="1.8.1">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -39,12 +39,10 @@
         </activity>
 
         <receiver android:name=".CheckReceiver" android:exported="false" />
-        <!-- 每日后台查一次余额：只由系统按需唤起，查完即退出，不常驻 -->
-        <service android:name=".CheckJob" android:exported="false"
-            android:permission="android.permission.BIND_JOB_SERVICE" />
         <!-- 分享余额卡片：只把应用缓存里刚生成的那张图临时授权给你选的应用 -->
         <provider android:name=".ShareProvider" android:authorities="com.qlu.dianfei.share"
             android:exported="false" android:grantUriPermissions="true" />
+
         <receiver android:name=".BootReceiver" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />

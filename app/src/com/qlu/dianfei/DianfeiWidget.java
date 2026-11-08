@@ -61,9 +61,9 @@ public class DianfeiWidget extends AppWidgetProvider {
             String daysTxt = Double.isNaN(estDays) ? "用电速度计算中"
                     : estDays >= 99 ? "还能用 99+ 天"
                     : estDays < 1 ? "不到 1 天就用完" : "约还能用 " + (int) Math.floor(estDays) + " 天";
-            boolean alert = est <= thr || (alertDays > 0 && !Double.isNaN(estDays) && estDays <= alertDays);
-            boolean near = !alert && (Double.isNaN(estDays) ? est <= thr * 2 : estDays <= Math.max(7, 2 * alertDays));
-            int color = alert ? R.color.widget_err : near ? R.color.widget_warn : R.color.widget_ok;
+            boolean alert = s[0] <= thr || est <= thr || (alertDays > 0 && !Double.isNaN(estDays) && estDays <= alertDays);
+            boolean near = !alert && (Double.isNaN(estDays) ? s[0] <= thr * 2 : estDays <= Math.max(7, 2 * alertDays));
+            int color = alert ? R.color.widget_err : near ? R.color.widget_warn : Double.isNaN(estDays) ? R.color.widget_accent : R.color.widget_ok;
             v.setTextViewText(R.id.w_days, daysTxt);
             v.setTextColor(R.id.w_days, col(c, color));
             v.setTextColor(R.id.w_balance, col(c, alert ? R.color.widget_err : R.color.widget_text));

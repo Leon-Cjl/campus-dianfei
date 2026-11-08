@@ -4,19 +4,23 @@
 :root{
  --bg:#f7f7f7;--surface:#ffffff;--surface-2:#f0f0f0;--surface-3:#e3e3e3;
  --text:#1a1a1a;--muted:#737373;--line:#ececec;--outline:#d4d4d4;
- --primary:#3482ff;--on-primary:#ffffff;--primary-soft:#e6efff;--on-primary-soft:#1f66db;
+ --primary:#3482ff;--on-primary:#000000;--primary-soft:#e6efff;--on-primary-soft:#1f66db;
  --ok:#16803d;--ok-soft:#dcf3e3;--warn:#a85f00;--warn-soft:#fff0d4;--err:#d93a30;--err-soft:#fde5e3;
  --fill-ok:#2fbf6b;--fill-warn:#ffa21a;--fill-err:#ff5a4f;
  --heat0:#f0f0f0;--heat1:#cfe0ff;--heat2:#9cc0ff;--heat3:#5f97ff;--heat4:#2c6cf0;
  --shadow-up:0 -6px 24px rgb(0 0 0 / .08);
  --scrim:rgb(0 0 0 / .4);--bar:rgb(247 247 247 / .86);--toast:rgb(32 32 32 / .94);
  --appbar-h:56px;
+ /* 只用三条曲线：进场缓出、退场缓入、弹簧（--spring 由 app.js 按真实弹簧算好覆盖） */
+ --ease-out:cubic-bezier(.2,.8,.2,1);--ease-in:cubic-bezier(.4,0,1,1);--spring:cubic-bezier(.2,.9,.3,1);
+ /* 手势小白条高度：原生端写 --sab，界面铺到屏幕最底，底栏、面板、提示按它让开 */
+ --sab:0px;--safe-b:max(env(safe-area-inset-bottom,0px),var(--sab));
  color-scheme:light;
 }
 :root[data-theme=dark]{
  --bg:#000000;--surface:#1a1a1a;--surface-2:#262626;--surface-3:#363636;
  --text:#f0f0f0;--muted:#9a9a9a;--line:#262626;--outline:#3d3d3d;
- --primary:#4c93ff;--on-primary:#ffffff;--primary-soft:#14284a;--on-primary-soft:#94bdff;
+ --primary:#4c93ff;--on-primary:#000000;--primary-soft:#14284a;--on-primary-soft:#94bdff;
  --ok:#4cc77a;--ok-soft:#12301d;--warn:#ffb340;--warn-soft:#3a2a0d;--err:#ff6b61;--err-soft:#3d1513;
  --fill-ok:#2fb565;--fill-warn:#f29a18;--fill-err:#f0544a;
  --heat0:#262626;
@@ -32,6 +36,7 @@ body:has(dialog[open]){overflow:hidden}
 h1,h2,h3,p,dl,dd{margin:0}
 button,input{font:inherit;color:inherit}
 button{cursor:pointer}
+button:disabled{cursor:wait;opacity:.65}
 :focus-visible{outline:2px solid var(--primary);outline-offset:2px}
 .muted{color:var(--muted)}
 .small{font-size:13px}
@@ -65,16 +70,22 @@ button{cursor:pointer}
 .ptr.armed{background:var(--primary);color:var(--on-primary)}
 
 /* ---------- 布局与导航 ---------- */
-.content{padding:8px 16px 104px;max-width:640px;margin:0 auto;min-width:0;overflow-x:clip}
+.content{padding:8px 16px calc(104px + var(--safe-b));max-width:640px;margin:0 auto;min-width:0;overflow-x:clip}
 /* 切页左右滑入时内容不能把页面撑宽：撑宽的那一瞬间 WebView 会重排视口，底栏被挤下去、文字看不见 */
 body{overflow-x:hidden}
-.nav{position:fixed;left:0;right:0;bottom:0;z-index:25;display:flex;transform:translateZ(0);background:var(--bar);-webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);border-top:1px solid var(--line);padding:4px 4px calc(4px + env(safe-area-inset-bottom))}
-.nav button{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;min-height:56px;padding:4px 0;border:0;background:none;color:var(--muted);font-size:12px}
-.nav .ic{display:grid;place-items:center;width:56px;height:30px;border-radius:15px;transition:background .2s,transform .2s}
-.nav .icon{width:22px;height:22px}
+/* 悬浮底栏（和「工大学伴」一致）：离开屏幕边缘的圆角胶囊，选中项下面一块浅色滑块，切页时带一点回弹滑过去；
+   按住滑块可以拖，经过的图标放大，松手切到那一页 */
+.nav{position:fixed;left:12px;right:12px;bottom:calc(10px + var(--safe-b));z-index:25;display:flex;max-width:520px;margin:0 auto;padding:6px;transform:translateZ(0);background:color-mix(in srgb,var(--surface) 84%,transparent);-webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);border:1px solid color-mix(in srgb,var(--text) 9%,transparent);border-radius:30px;box-shadow:0 10px 30px rgb(0 0 0 / .14),0 1px 3px rgb(0 0 0 / .08);touch-action:pan-y;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;transition:transform .36s var(--spring)}
+.nav button{position:relative;z-index:1;flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;min-height:54px;padding:4px 0;border:0;border-radius:24px;background:none;color:var(--muted);font-size:12px;transition:color .24s ease-out}
+.nav .ic{display:grid;place-items:center;width:40px;height:26px}
+.nav .icon{width:22px;height:22px;transition:transform .3s var(--spring)}
 .nav button[aria-current=page]{color:var(--primary);font-weight:600}
 .nav button[aria-current=page] .icon{stroke-width:2.2}
-.nav button:active .ic{transform:scale(.9)}
+.nav-pill{position:absolute;z-index:0;top:6px;bottom:6px;left:0;width:0;border-radius:24px;background:var(--primary-soft);pointer-events:none}
+.nav.dragging{transform:scale(1.02)}
+.nav.dragging .nav-pill{box-shadow:0 8px 22px rgb(0 0 0 / .2),inset 0 1px 0 rgb(255 255 255 / .45),inset 0 0 0 1px rgb(255 255 255 / .25);background:color-mix(in srgb,var(--primary-soft) 82%,#fff)}
+.nav.dragging button.lens{color:var(--primary)}
+.nav.dragging button.lens .icon{transform:scale(1.22)}
 
 /* ---------- 通用组件 ---------- */
 .page-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:2px 4px 14px}
@@ -92,7 +103,6 @@ body{overflow-x:hidden}
 .btn.danger-filled{background:var(--err);color:#fff}
 .btn.wide{width:100%;min-height:48px;border-radius:24px;font-size:15px}
 .btn.sm{min-height:32px;padding:0 12px;font-size:13px}
-.btn:active{transform:scale(.97)}
 .link{border:0;background:none;padding:0;color:var(--primary);font:inherit;font-weight:600}
 .badge{display:inline-flex;align-items:center;gap:4px;padding:2px 10px;border-radius:10px;background:var(--surface-2);color:var(--muted);font-size:12px;font-weight:600;white-space:nowrap}
 .badge.ok{background:var(--ok-soft);color:var(--ok)}
@@ -102,7 +112,6 @@ body{overflow-x:hidden}
 .chip-row+.row-label{margin-top:18px}
 .chip{display:inline-flex;align-items:center;min-height:36px;padding:0 16px;border:0;border-radius:18px;background:var(--surface-2);font-size:14px;white-space:nowrap;transition:background .15s,transform .15s}
 .chip.on{background:var(--primary-soft);color:var(--on-primary-soft);font-weight:600}
-.chip:active{transform:scale(.96)}
 .seg{display:inline-flex;padding:3px;border-radius:12px;background:var(--surface-2)}
 .seg button{min-height:30px;padding:0 12px;border:0;border-radius:9px;background:none;color:var(--muted);font-size:13px;transition:background .2s,color .2s}
 .seg button.on{background:var(--surface);color:var(--text);font-weight:600;box-shadow:0 1px 3px rgb(0 0 0 / .12)}
@@ -118,9 +127,11 @@ body{overflow-x:hidden}
 .tone-ok{--tone:var(--fill-ok);--tone-soft:var(--ok-soft);--tone-text:var(--ok)}
 .tone-warn{--tone:var(--fill-warn);--tone-soft:var(--warn-soft);--tone-text:var(--warn)}
 .tone-err{--tone:var(--fill-err);--tone-soft:var(--err-soft);--tone-text:var(--err)}
+.tone-unknown{--tone:var(--outline);--tone-soft:var(--surface-2);--tone-text:var(--muted)}
+.badge.unknown{background:var(--surface-2);color:var(--muted)}
 .hero-row{position:relative;display:flex;align-items:center;gap:14px}
 .hero-main{flex:1;min-width:0}
-.big{display:flex;align-items:flex-start;margin:4px 0 6px;font-size:54px;font-weight:700;line-height:1.05;letter-spacing:-1.5px;font-variant-numeric:tabular-nums}
+.big{display:flex;align-items:flex-start;white-space:nowrap;overflow:hidden;margin:4px 0 6px;font-size:54px;font-weight:700;line-height:1.05;letter-spacing:-1.5px;font-variant-numeric:tabular-nums}
 .big .yen{margin:6px 3px 0 0;font-size:26px;letter-spacing:0;color:var(--muted)}
 .hero-sub{font-size:13px;color:var(--muted)}
 .hero-sub b{color:var(--tone-text);font-weight:700}
@@ -146,14 +157,13 @@ body{overflow-x:hidden}
 
 /* 小数据块 */
 .tiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:12px}
-.tile{padding:12px 12px 10px;border-radius:16px;background:var(--surface)}
+.tile{min-width:0;padding:12px 12px 10px;border-radius:16px;background:var(--surface)}
 .tile-label{font-size:12px;color:var(--muted)}
 .tile-val{margin-top:2px;font-size:19px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tile-sub{font-size:11px;color:var(--muted)}
 
 /* 一句话 */
 .quote{display:flex;align-items:center;gap:12px;width:100%;padding:14px 14px 14px 16px;border:0;text-align:left;font-size:14px;transition:transform .15s}
-.quote:active{transform:scale(.98)}
 .q-emoji{display:grid;place-items:center;width:38px;height:38px;flex-shrink:0;border-radius:12px;background:var(--surface-2);font-size:20px}
 .q-text{flex:1;min-width:0}
 .q-more{color:var(--muted)}
@@ -209,7 +219,6 @@ html:not([data-motion=off]) .chart .line{stroke-dasharray:1;stroke-dashoffset:1;
 .cal{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px;margin-top:10px}
 .wk{font-size:11px;color:var(--muted);text-align:center}
 .day{aspect-ratio:1;display:grid;place-items:center;border:0;border-radius:10px;background:var(--heat0);color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums;transition:transform .15s}
-.day:active{transform:scale(.9)}
 .day.l1{background:var(--heat1);color:var(--text)}
 .day.l2{background:var(--heat2);color:var(--text)}
 .day.l3{background:var(--heat3);color:#fff}
@@ -224,7 +233,7 @@ html:not([data-motion=off]) .chart .line{stroke-dasharray:1;stroke-dashoffset:1;
 /* 汇总 */
 .sum-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px 12px}
 .sum-grid div span{display:block;font-size:12px;color:var(--muted)}
-.sum-grid div b{font-size:18px;font-variant-numeric:tabular-nums}
+.sum-grid div b{display:block;white-space:nowrap;overflow:hidden;font-size:18px;font-variant-numeric:tabular-nums}
 .sum-grid div em{display:block;font-style:normal;font-size:11px;color:var(--muted)}
 
 /* ---------- 我的 ---------- */
@@ -238,7 +247,6 @@ html:not([data-motion=off]) .chart .line{stroke-dasharray:1;stroke-dashoffset:1;
 .kv dd{text-align:right;font-variant-numeric:tabular-nums}
 .badges{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
 .bdg{display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px 6px 12px;border:0;border-radius:16px;background:var(--surface-2);transition:transform .15s}
-.bdg:active{transform:scale(.95)}
 .bdg-ic{font-size:28px;line-height:1;filter:grayscale(1);opacity:.32}
 .bdg-name{font-size:12px;color:var(--muted)}
 .bdg.got{background:var(--primary-soft)}
@@ -246,12 +254,10 @@ html:not([data-motion=off]) .chart .line{stroke-dasharray:1;stroke-dashoffset:1;
 .bdg.got .bdg-name{color:var(--on-primary-soft);font-weight:600}
 .swatches{display:flex;flex-wrap:wrap;gap:12px}
 .sw{position:relative;width:34px;height:34px;border:0;border-radius:50%;background:var(--c);transition:transform .15s}
-.sw:active{transform:scale(.9)}
 .sw.on:after{content:"";position:absolute;inset:-5px;border:2px solid var(--c);border-radius:50%}
-.sw.on:before{content:"";position:absolute;left:12px;top:9px;width:8px;height:13px;border:solid #fff;border-width:0 2.5px 2.5px 0;transform:rotate(45deg)}
+.sw.on:before{content:"";position:absolute;left:12px;top:9px;width:8px;height:13px;border:solid var(--on-swatch,#000);border-width:0 2.5px 2.5px 0;transform:rotate(45deg)}
 .hint{margin:-2px 0 12px;font-size:13px;color:var(--muted)}
 .switch-row{display:flex;align-items:center;gap:12px;width:100%;margin-bottom:4px;padding:12px 14px 12px 16px;border:0;border-radius:16px;background:var(--surface-2);text-align:left;transition:transform .15s}
-.switch-row:active{transform:scale(.985)}
 .switch-row>span{flex:1;display:flex;flex-direction:column;gap:2px;min-width:0}
 .switch-row b{font-size:15px;font-weight:600}
 .tgl{position:relative;width:46px;height:28px;flex-shrink:0;border-radius:14px;background:var(--outline);transition:background .2s}
@@ -283,12 +289,18 @@ html:not([data-motion=off]) .chart .line{stroke-dasharray:1;stroke-dashoffset:1;
 .donate .hint{text-align:center}
 
 /* ---------- 底部面板 / 提示 ---------- */
-dialog.sheet{position:fixed;inset:auto 12px 12px;width:auto;max-width:520px;margin:0 auto;padding:26px 20px 20px;border:0;border-radius:28px;background:var(--surface);color:var(--text);box-shadow:var(--shadow-up)}
-dialog.sheet::backdrop{background:var(--scrim)}
-html:not([data-motion=off]) dialog.sheet[open]{animation:sheet-in .3s cubic-bezier(.2,.9,.3,1)}
-html:not([data-motion=off]) dialog.sheet.closing{animation:sheet-out .18s ease-in forwards}
-@keyframes sheet-in{from{transform:translateY(40px);opacity:0}}
-@keyframes sheet-out{to{transform:translateY(40px);opacity:0}}
+dialog.sheet{position:fixed;inset:auto 12px calc(12px + var(--safe-b));width:auto;max-width:520px;max-height:calc(100vh - var(--safe-b) - 40px);max-height:calc(100dvh - var(--safe-b) - 40px);overflow-y:auto;overscroll-behavior:contain;margin:0 auto;padding:26px 20px 20px;border:0;border-radius:28px;background:var(--surface);color:var(--text);box-shadow:var(--shadow-up)}
+/* 底部面板整块不透明地从屏幕底下滑上来、滑下去，只让遮罩淡入淡出（边移边变透明时中间几帧会和后面页面叠成重影）；可以往下拖关 */
+dialog.sheet::backdrop{background:var(--scrim);opacity:var(--scrim-o,1)}
+html:not([data-motion=off]) dialog.sheet[open]{animation:sheet-up .38s var(--spring)}
+html:not([data-motion=off]) dialog.sheet[open]:not(.closing)::backdrop{animation:fade-in .22s ease-out}
+html:not([data-motion=off]) dialog.sheet.closing{animation:sheet-down .22s var(--ease-in) forwards}
+html:not([data-motion=off]) dialog.sheet.closing::backdrop{animation:fade-out .22s var(--ease-in) forwards}
+dialog.sheet.closing-drag::backdrop{opacity:0;transition:opacity .18s}
+@keyframes sheet-up{from{transform:translateY(calc(100% + 24px))}}
+@keyframes sheet-down{to{transform:translateY(calc(100% + 24px))}}
+@keyframes fade-in{from{opacity:0}}
+@keyframes fade-out{to{opacity:0}}
 .sheet-body{text-align:center}
 .sheet-icon{margin-bottom:8px;font-size:46px;line-height:1.1}
 .sheet h2{margin-bottom:6px;font-size:18px}
@@ -297,8 +309,10 @@ html:not([data-motion=off]) dialog.sheet.closing{animation:sheet-out .18s ease-i
 .sheet-actions .btn{flex:1}
 .field{width:100%;height:50px;margin-top:16px;padding:0 16px;border:0;border-radius:14px;background:var(--surface-2);font-size:17px;text-align:center;-webkit-user-select:text;user-select:text}
 .field:focus{outline:2px solid var(--primary)}
-.toast{position:fixed;left:50%;bottom:84px;z-index:60;max-width:calc(100vw - 48px);padding:10px 18px;border-radius:20px;background:var(--toast);color:#fff;font-size:14px;transform:translateX(-50%);pointer-events:none}
-html:not([data-motion=off]) .toast.pop{animation:pop-in .25s cubic-bezier(.2,.9,.3,1)}
+.toast{position:fixed;left:50%;bottom:calc(96px + var(--safe-b));z-index:60;max-width:calc(100vw - 48px);padding:10px 18px;border-radius:20px;background:var(--toast);color:#fff;font-size:14px;transform:translateX(-50%);pointer-events:none}
+html:not([data-motion=off]) .toast.pop{animation:pop-in .3s var(--spring)}
+/* 提示先淡出再隐藏，不是一下消失 */
+html:not([data-motion=off]) .toast.out{opacity:0;transform:translate(-50%,6px);transition:opacity .18s var(--ease-in),transform .18s var(--ease-in)}
 @keyframes pop-in{from{opacity:0;transform:translate(-50%,10px) scale(.96)}}
 
 /* 小礼花 */
@@ -326,3 +340,41 @@ html.android .appbar,html.android .nav{-webkit-backdrop-filter:none;backdrop-fil
 .bdg-prog i{display:block;height:100%;border-radius:2px;background:var(--primary);opacity:.7}
 
 html[data-motion=off] *,html[data-motion=off] *:before,html[data-motion=off] *:after{animation:none!important;transition:none!important}
+/* 1.7：首页标题右侧（状态 + 分享）、并排按钮、假期日期框、分享卡片预览 */
+.head-actions{display:flex;align-items:center;gap:4px}
+.btn-row{display:flex;gap:10px}
+.btn-row .btn{flex:1}
+.field-label{display:block;margin-top:14px;font-size:13px;color:var(--muted);text-align:left}
+.field-label .field{margin-top:6px}
+.share-preview{display:block;width:100%;max-width:300px;margin:2px auto 10px;border-radius:16px;box-shadow:0 2px 14px rgba(0,0,0,.14)}
+/* 1.7.1：设置卡里的分隔线、每日查询状态、闹钟漏跑提示（不如余额告急那么红） */
+.divider{height:1px;margin:18px 0 14px;background:var(--line, rgba(127,127,127,.18))}
+.bg-status{margin:12px 0 0;font-size:13px}
+.alert.soft{background:var(--warn-soft);color:var(--text)}
+.alert.soft .icon{color:var(--warn)}
+/* 1.8：动效移植自「工大学伴」0.9.27 */
+/* 按下：手指一碰就缩小（脚本加 .pressing），松手由脚本按弹簧弹回 */
+html:not([data-motion=off]) .pressing{transform:scale(.94);transition:transform .1s cubic-bezier(.2,0,0,1)}
+html:not([data-motion=off]) .nav button.pressing{transform:none}
+html:not([data-motion=off]) .nav button.pressing .icon{transform:scale(.86)}
+/* 第一次出现的卡片升起淡入 */
+html:not([data-motion=off]) .first-show{animation:rise .32s var(--ease-out) both}
+@keyframes rise{from{opacity:0;transform:translateY(8px)}}
+/* 单选组里滑过去的那块高亮：垫在按钮文字下面 */
+.slide-ghost{position:absolute;left:0;top:0;z-index:0;pointer-events:none}
+.seg>button,.chip-row>.chip{position:relative;z-index:1}
+
+/* 1.8.1：低动态保留加载状态；液面、骨架、弹窗、按钮、礼花等装饰动画静止。 */
+@media(prefers-reduced-motion:reduce){
+ *,*:before,*:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}
+ dialog.sheet::backdrop{animation:none!important;transition:none!important}
+ .progress i{animation:indeterminate 1.8s linear infinite!important}
+ .mini-spin,.icon-btn.spin .icon{animation:spin 1.2s linear infinite!important}
+}
+html[data-motion=off]{scroll-behavior:auto!important}
+html[data-motion=off] dialog.sheet::backdrop{animation:none!important;transition:none!important}
+html[data-motion=off] .progress i{animation:indeterminate 1.8s linear infinite!important}
+html[data-motion=off] .mini-spin,html[data-motion=off] .icon-btn.spin .icon{animation:spin 1.2s linear infinite!important}
+.legacy-notice{margin-bottom:14px;padding:12px;border-radius:14px;background:var(--warn-soft)}
+.legacy-notice .hint{color:var(--text)}
+.operation-status{min-height:1.5em;margin:10px 0}

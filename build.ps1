@@ -12,8 +12,11 @@ $PLAT  = "$SDK\platforms\android-37.0"
 $AJAR  = "$PLAT\android.jar"
 $JBR   = "$JDK\bin"
 $PROJ  = $PSScriptRoot
-$APP   = "$PROJ\app"
-$B     = "$PROJ\build"
+# aapt/aapt2 on Windows reject non-ASCII absolute paths. Use relative paths from the project root.
+Push-Location -LiteralPath $PROJ
+try {
+$APP   = 'app'
+$B     = 'build'
 
 # 让 d8.bat / apksigner.bat / keytool 能找到 java
 $env:JAVA_HOME = $JDK
@@ -28,10 +31,7 @@ New-Item -ItemType Directory -Force -Path $B,"$B\gen","$B\obj","$B\dex" | Out-Nu
 Write-Host "[1/7] 调试签名 debug.keystore（固定，不随 build 重建）"
 $ks = "$PROJ\debug.keystore"
 if (-not (Test-Path $ks)) {
-    & "$JBR\keytool.exe" -genkeypair -v -keystore $ks -storepass android -keypass android `
-        -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 `
-        -dname "CN=Android Debug,O=Android,C=US" 2>&1 | Out-Null
-    Write-Host "  （已新建固定签名）"
+    throw '固定升级签名丢失，拒绝自动生成新签名；请先恢复原 debug.keystore。'
 }
 
 Write-Host "[2/7] aapt2 compile 资源"
@@ -107,4 +107,5 @@ Write-Host ""
 Write-Host "==== 打包完成 ===="
 $f = Get-Item $out
 Write-Host ("APK: {0}  ({1:N0} KB)" -f $f.FullName, ($f.Length/1KB))
+} finally { Pop-Location }
 

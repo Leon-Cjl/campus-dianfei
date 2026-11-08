@@ -53,7 +53,7 @@ import java.io.ByteArrayInputStream;
 import java.util.Map;
 
 /**
- * 校园电费 —— 原生壳。驱动脚本、读数存储、预警与每日闹钟在 Core，每日后台查询在 CheckJob。
+ * 校园电费 —— 原生壳。驱动脚本、读数存储、预警与每日闹钟在 Core，每日后台查询在 BgQuery。
  *
  * 两个 WebView：
  *  - ui：加载 assets 里的本地界面（https://dianfei.local/），所有展示、统计、勋章都在这里；
@@ -75,11 +75,11 @@ public class MainActivity extends Activity {
     // 排查问题时改成 true：允许电脑通过 adb 查看应用里的网页（配合 tests/inspect-webview.cjs）
     private static final boolean WEB_DEBUG = false;
 
-    /** 应用在前台时每日后台查询不跑（CheckJob 读） */
+    /** 应用在前台时每日后台查询不跑（BgQuery 读） */
     static volatile boolean inForeground = false;
 
     private final Handler h = new Handler(Looper.getMainLooper());
-    private int bgLoginsSeen = CheckJob.logins;
+    private int bgLoginsSeen = BgQuery.logins;
     private boolean pendingWeChat = false;
     private SharedPreferences sp;
     private CredentialStore credentials;
@@ -88,10 +88,18 @@ public class MainActivity extends Activity {
     private int recoveries = 0, loginRedirects = 0, loginSubmissions = 0;
     private long queryDuration = 0;
     private long queryId = 0, documentId = 0;
+    private long queryTicket;
+    private boolean destroyed;
+    private final java.util.concurrent.ExecutorService io = java.util.concurrent.Executors.newSingleThreadExecutor();
+    private final java.util.concurrent.atomic.AtomicBoolean operationBusy = new java.util.concurrent.atomic.AtomicBoolean();
+    private final Runnable releaseSchool = () -> { if (!this.fetching && !this.sheetShown) destroyFetch(); };
     private String activeToken = "", fetchStep = "connect";
     private ConnectivityManager connectivity;
     private ConnectivityManager.NetworkCallback networkCallback;
     private FrameLayout root;
+    private LinearLayout sheetBox;
+    // 手势小白条高度（像素）：界面铺到屏幕最底，告诉网页让开多少（CSS 变量 --sab）
+    private int navBottom = -1;
     private WebView ui, fetch;
     private LinearLayout sheetHead;
     private TextView sheetTitle, sheetSub, sheetClose, sheetHome;
@@ -99,6 +107,8 @@ public class MainActivity extends Activity {
     private boolean fetching = false, uiReady = false, uiStale = false, sheetShown = false;
     private String version = "";
     private String driverState = "", fetchState = "idle";
+    // 最近一次没查到的原因（retryFetch 的 reason），界面据此说清楚为什么、下一步做什么
+    private String failReason = "";
     private int barBg = 0xFF000000;
     private boolean barDark = true;
 
@@ -112,6 +122,7 @@ public class MainActivity extends Activity {
         super.onCreate(b);
         sp = getSharedPreferences("df", Context.MODE_PRIVATE);
         credentials = new CredentialStore(this);
+        ReadingStore.migrate(this);
         Core.migrate(this);
         if (WEB_DEBUG) WebView.setWebContentsDebuggingEnabled(true);
         barDark = sysDark();
@@ -120,13 +131,11 @@ public class MainActivity extends Activity {
         root = new FrameLayout(this);
 
         // 底层：学校页面 + 引导栏（平时被 ui 盖住）
-        LinearLayout sheet = new LinearLayout(this);
+        LinearLayout sheet = sheetBox = new LinearLayout(this);
         sheet.setOrientation(LinearLayout.VERTICAL);
         sheetHead = buildSheetHead();
         sheet.addView(sheetHead, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        fetch = new WebView(this);
-        sheet.addView(fetch, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         root.addView(sheet, mp());
 
         // 上层：本地界面
@@ -134,8 +143,20 @@ public class MainActivity extends Activity {
         root.addView(ui, mp());
 
         setContentView(root);
+        // 安卓 11 起：界面画到手势小白条下面、小白条透明。顶部和左右按系统栏让开；底部只让输入法，
+        // 小白条的高度交给网页（--sab），悬浮底栏和面板自己浮在它上方；学校页面露出来时整页让开小白条
+        if (Build.VERSION.SDK_INT >= 30) {
+            getWindow().setDecorFitsSystemWindows(false);
+            root.setOnApplyWindowInsetsListener((v, ins) -> {
+                android.graphics.Insets s = ins.getInsets(android.view.WindowInsets.Type.systemBars() | android.view.WindowInsets.Type.displayCutout());
+                android.graphics.Insets ime = ins.getInsets(android.view.WindowInsets.Type.ime());
+                v.setPadding(s.left, s.top, s.right, ime.bottom);
+                sheetBox.setPadding(0, 0, 0, ime.bottom > 0 ? 0 : s.bottom);
+                if (navBottom != s.bottom) { navBottom = s.bottom; pushInsets(); }
+                return android.view.WindowInsets.CONSUMED;
+            });
+        }
         applyBars(barBg, barDark);
-        setupFetch();
         setupUi();
         watchNetwork();
         try { version = getPackageManager().getPackageInfo(getPackageName(), 0).versionName; } catch (Exception ignore) {}
@@ -143,6 +164,7 @@ public class MainActivity extends Activity {
         // 学校页面和本地界面同时开始加载，不等界面画完再连学校（冷启动省 0.4 秒左右）；界面就绪时补推一次状态
         maybeAutoFetch();
         Core.ensureChannels(this);
+        Core.noteMissedAlarm(this);
         Core.scheduleDaily(this);
         setupShortcuts();
         if (b == null) handleIntent(getIntent());
@@ -154,6 +176,8 @@ public class MainActivity extends Activity {
         WebSettings s = ui.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
+        // 跟随系统字体大小（WebView 默认固定 100%）；太大时三格统计放不下，封顶 150%
+        s.setTextZoom(Math.round(Math.max(0.85f, Math.min(1.5f, getResources().getConfiguration().fontScale)) * 100));
         s.setAllowFileAccess(false);
         s.setAllowContentAccess(false);
         ui.setOverScrollMode(View.OVER_SCROLL_NEVER);
@@ -183,6 +207,7 @@ public class MainActivity extends Activity {
             @Override
             public void onPageFinished(WebView v, String url) {
                 uiReady = true;
+                pushInsets();
                 if (uiStale) { uiStale = false; pushState(); }
                 if (pendingWeChat) { pendingWeChat = false; ui.evaluateJavascript("window.DF&&DF.wechat()", null); }
                 maybeAutoFetch();
@@ -246,6 +271,7 @@ public class MainActivity extends Activity {
                 v.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, "校园电费-" + new java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.CHINA).format(new java.util.Date()) + ".png");
                 v.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "image/png");
                 v.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_PICTURES + "/校园电费");
+                v.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1);
                 u = cr.insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v);
                 if (u == null) return false;
                 try (java.io.InputStream in = new java.io.FileInputStream(f); java.io.OutputStream out = cr.openOutputStream(u)) {
@@ -253,6 +279,8 @@ public class MainActivity extends Activity {
                     int n;
                     while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
                 }
+                v.clear(); v.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0);
+                cr.update(u, v, null, null);
                 return true;
             } catch (Exception e) {
                 if (u != null) try { cr.delete(u, null, null); } catch (Exception ignore) {}
@@ -270,8 +298,13 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void resetRoom() {
             h.post(() -> {
-                sp.edit().remove("room").remove("campus").apply();
+                BgQuery.yield();
                 if (fetching) endFetch("idle");
+                QueryGate.invalidate();
+                ReadingStore.detach(MainActivity.this);
+                sp.edit().remove("room").remove("campus").apply();
+                destroyFetch();
+                pushState();
                 startFetch();
             });
         }
@@ -279,9 +312,37 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void clearHistory() {
             h.post(() -> {
-                sp.edit().remove("hist").remove("p_badges").remove("p_badgesInit").apply();
+                BgQuery.yield();
+                if (fetching) endFetch("idle");
+                QueryGate.invalidate();
+                ReadingStore.clearActive(MainActivity.this);
+                sp.edit().remove("p_badges").remove("p_badgesInit").apply();
                 pushState();
             });
+        }
+
+        @JavascriptInterface public void claimLegacy() {
+            h.post(() -> {
+                try { ReadingStore.claimLegacy(MainActivity.this); pushState(); }
+                catch (Exception ex) { operationResult("claim", false, "请先查询当前宿舍，再确认旧记录归属"); }
+            });
+        }
+
+        @JavascriptInterface public boolean exportCsvAsync() {
+            return runIo("csv", () -> {
+                String text = Core.historyCsv(MainActivity.this);
+                if (text == null) throw new java.io.IOException("还没有记录可以导出");
+                return exportText("csv", "text/csv", "\uFEFF" + text) ? "CSV 已保存到下载/校园电费" : null;
+            });
+        }
+        @JavascriptInterface public boolean exportBackup() {
+            return runIo("backup", () -> exportText("json", "application/json", ReadingStore.backupJson(MainActivity.this).toString()) ? "数据备份已保存，不含账号密码" : null);
+        }
+        @JavascriptInterface public boolean saveImageAsync(String b64) {
+            return runIo("save-image", () -> { if (!saveImage(b64)) throw new java.io.IOException("保存失败；Android 10 以下可使用分享保存"); return "图片已存到相册/校园电费"; });
+        }
+        @JavascriptInterface public boolean shareImageAsync(String b64) {
+            return runIo("share-image", () -> { java.io.File f = writeCard(b64); h.post(() -> shareFile(f, "image/png", "share-image")); return null; });
         }
 
         @JavascriptInterface
@@ -394,7 +455,78 @@ public class MainActivity extends Activity {
             ClipboardManager cb = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
             if (cb != null) cb.setPrimaryClip(ClipData.newPlainText("公众号", name.trim()));
         }
-        try { startActivity(wx.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); return true; } catch (Exception ignore) { return false; }
+        try {
+            startActivity(wx.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            // 记下去充值的时间：十分钟内回到应用时界面自动查一次，看到账没有
+            sp.edit().putString("p_wxAt", String.valueOf(System.currentTimeMillis())).apply();
+            return true;
+        } catch (Exception ignore) { return false; }
+    }
+
+    private interface IoTask { String run() throws Exception; }
+
+    private boolean runIo(String kind, IoTask task) {
+        if (destroyed || !operationBusy.compareAndSet(false, true)) return false;
+        io.execute(() -> {
+            boolean ok = true;
+            String message;
+            try { message = task.run(); }
+            catch (Exception ex) { ok = false; message = "操作未完成，请检查可用空间后重试"; }
+            if (message != null) { operationBusy.set(false); operationResult(kind, ok, message); }
+        });
+        return true;
+    }
+
+    private void operationResult(String kind, boolean ok, String message) {
+        h.post(() -> { if (!destroyed && uiReady) ui.evaluateJavascript("window.DF&&DF.onOperation&&DF.onOperation(" + JSONObject.quote(kind) + "," + ok + "," + JSONObject.quote(message) + ")", null); });
+    }
+
+    private boolean exportText(String extension, String mimeType, String content) throws Exception {
+        String name = "dianfei-" + new java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.ROOT).format(new java.util.Date()) + "." + extension;
+        if (Build.VERSION.SDK_INT >= 29) {
+            android.content.ContentResolver cr = getContentResolver();
+            android.content.ContentValues values = new android.content.ContentValues();
+            values.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, name);
+            values.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mimeType);
+            values.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS + "/校园电费");
+            values.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1);
+            Uri uri = cr.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+            if (uri == null) throw new java.io.IOException("insert");
+            try {
+                try (java.io.OutputStream out = cr.openOutputStream(uri)) { out.write(content.getBytes(java.nio.charset.StandardCharsets.UTF_8)); }
+                values.clear(); values.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0);
+                cr.update(uri, values, null, null);
+            } catch (Exception ex) { cr.delete(uri, null, null); throw ex; }
+            return true;
+        } else {
+            java.io.File dir = new java.io.File(getCacheDir(), ShareProvider.DIR);
+            if (!dir.isDirectory() && !dir.mkdirs()) throw new java.io.IOException("mkdir");
+            java.io.File file = new java.io.File(dir, name);
+            try (java.io.OutputStream out = new java.io.FileOutputStream(file)) { out.write(content.getBytes(java.nio.charset.StandardCharsets.UTF_8)); }
+            h.post(() -> shareFile(file, mimeType, "json".equals(extension) ? "backup" : "csv"));
+            return false;
+        }
+    }
+
+    private void shareFile(java.io.File file, String mimeType, String kind) {
+        if (destroyed) { operationBusy.set(false); return; }
+        Uri uri = ShareProvider.uri(this, file.getName());
+        Intent send = new Intent(Intent.ACTION_SEND).setType(mimeType).putExtra(Intent.EXTRA_STREAM, uri)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        send.setClipData(ClipData.newRawUri("", uri));
+        try { startActivity(Intent.createChooser(send, "分享校园电费数据")); operationResult(kind, true, "请选择接收文件的应用"); }
+        catch (Exception ex) { operationResult(kind, false, "没有可用的接收应用"); }
+        finally { operationBusy.set(false); }
+    }
+
+    private void resetSchoolSession(boolean detach, Runnable after) {
+        BgQuery.yield();
+        if (fetching) endFetch("idle");
+        QueryGate.invalidate();
+        destroyFetch();
+        if (detach) ReadingStore.detach(this);
+        android.webkit.WebStorage.getInstance().deleteOrigin("https://qlgydx.mp.sinojy.cn");
+        CookieManager.getInstance().removeAllCookies(value -> { if (!destroyed) { pushState(); after.run(); } });
     }
 
     /**
@@ -403,7 +535,6 @@ public class MainActivity extends Activity {
      */
     private void handleIntent(Intent i) {
         String a = i == null ? null : i.getAction();
-        if ("TEMP_TEST_BG".equals(a)) { CheckJob.schedule(this, 30000); Toast.makeText(this, "bg scheduled", Toast.LENGTH_SHORT).show(); return; } // TEMP
         if (!Core.ACTION_WECHAT.equals(a) && !Core.ACTION_REFRESH.equals(a)) return;
         setIntent(new Intent(this, MainActivity.class)); // 转屏或重建时不再重复执行
         if (Core.ACTION_REFRESH.equals(a)) { startFetch(); return; }
@@ -425,18 +556,26 @@ public class MainActivity extends Activity {
             java.util.List<android.content.pm.ShortcutInfo> list = new java.util.ArrayList<>();
             list.add(new android.content.pm.ShortcutInfo.Builder(this, "refresh").setShortLabel("刷新余额").setLongLabel("刷新电费余额")
                     .setIcon(android.graphics.drawable.Icon.createWithResource(this, R.drawable.ic_sc_refresh))
-                    .setIntent(new Intent(this, MainActivity.class).setAction(Core.ACTION_REFRESH)).setRank(0).build());
+                    .setIntent(shortcutIntent(Core.ACTION_REFRESH)).setRank(0).build());
             list.add(new android.content.pm.ShortcutInfo.Builder(this, "wechat").setShortLabel("去充值").setLongLabel("打开微信去充值")
                     .setIcon(android.graphics.drawable.Icon.createWithResource(this, R.drawable.ic_sc_recharge))
-                    .setIntent(new Intent(this, MainActivity.class).setAction(Core.ACTION_WECHAT)).setRank(1).build());
+                    .setIntent(shortcutIntent(Core.ACTION_WECHAT)).setRank(1).build());
             sm.setDynamicShortcuts(list);
         } catch (Exception ignore) {}
     }
 
+    // 应用已经开着时交给原来那个界面（onNewIntent），不重建、不丢学校会话
+    private Intent shortcutIntent(String action) {
+        return new Intent(this, MainActivity.class).setAction(action)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+    }
+
     /** 界面画好的分享卡片（PNG 的 base64）写进缓存目录，返回文件；同名覆盖，只留最新一张 */
     private java.io.File writeCard(String b64) throws Exception {
+        if (b64 == null || b64.length() > 4 * 1024 * 1024) throw new IllegalArgumentException("image size");
         byte[] png = android.util.Base64.decode(b64.replaceFirst("^data:image/png;base64,", ""), android.util.Base64.DEFAULT);
-        if (png.length < 8 || png[1] != 'P' || png[2] != 'N' || png[3] != 'G') throw new IllegalArgumentException("not png");
+        byte[] signature = {(byte)137, 80, 78, 71, 13, 10, 26, 10};
+        if (png.length < 8 || !java.util.Arrays.equals(signature, java.util.Arrays.copyOf(png, 8))) throw new IllegalArgumentException("not png");
         java.io.File dir = new java.io.File(getCacheDir(), ShareProvider.DIR);
         if (!dir.isDirectory() && !dir.mkdirs()) throw new java.io.IOException("mkdir");
         java.io.File f = new java.io.File(dir, "dianfei-card.png");
@@ -478,6 +617,7 @@ public class MainActivity extends Activity {
             JSONObject o = new JSONObject();
             JSONArray hist = new JSONArray(sp.getString("hist", "[]"));
             o.put("hist", hist);
+            o.put("storage", ReadingStore.summary(this));
             o.put("room", sp.getString("room", ""));
             o.put("campus", sp.getString("campus", ""));
             o.put("addr", sp.getString("addr", ""));
@@ -495,6 +635,9 @@ public class MainActivity extends Activity {
             o.put("notifyAllowed", Core.notifyAllowed(this));
             o.put("wechat", getPackageManager().getLaunchIntentForPackage(Core.WECHAT) != null);
             o.put("nextAuto", sp.getLong("nextAuto", 0));
+            o.put("fetchReason", failReason);
+            o.put("bgLast", sp.getString("bgLast", ""));
+            o.put("alarmMiss", sp.getInt("alarmMiss", 0));
             JSONObject p = new JSONObject();
             for (Map.Entry<String, ?> en : sp.getAll().entrySet()) {
                 if (en.getKey().startsWith("p_")) p.put(en.getKey().substring(2), String.valueOf(en.getValue()));
@@ -514,11 +657,31 @@ public class MainActivity extends Activity {
 
     private void setFetchState(String st) {
         fetchState = st;
-        if (uiReady) ui.evaluateJavascript("window.DF&&DF.onFetch('" + st + "')", null);
+        if (uiReady) ui.evaluateJavascript("window.DF&&DF.onFetch('" + st + "'," + JSONObject.quote(failReason) + ")", null);
         else uiStale = true;
     }
 
     // ---------------- 取数 ----------------
+
+    private void ensureFetch() {
+        h.removeCallbacks(releaseSchool);
+        if (fetch == null) {
+            fetch = new WebView(this);
+            sheetBox.addView(fetch, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+            setupFetch();
+            sessionKnown = false;
+        }
+        fetch.onResume();
+    }
+
+    private void destroyFetch() {
+        h.removeCallbacks(releaseSchool);
+        WebView old = fetch;
+        fetch = null;
+        sessionKnown = false;
+        if (old == null) return;
+        try { Core.stopScripts(old); old.stopLoading(); old.removeJavascriptInterface("DF"); sheetBox.removeView(old); old.destroy(); } catch (Exception ignored) {}
+    }
 
     private void setupFetch() {
         CookieManager cm = CookieManager.getInstance();
@@ -539,29 +702,37 @@ public class MainActivity extends Activity {
         fetch.addJavascriptInterface(new Driver(), "DF");
         fetch.setWebViewClient(new WebViewClient() {
             @Override public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) {
-                return !"https".equalsIgnoreCase(r.getUrl().getScheme());
+                return !Core.isSchoolUrl(r.getUrl().toString());
             }
             @Override public void onPageStarted(WebView v, String url, android.graphics.Bitmap icon) {
-                if (!fetching || activeToken.isEmpty()) return;
+                if (v != fetch || !fetching || activeToken.isEmpty()) return;
                 activeToken = queryId + ":" + (++documentId);
                 pageCommitted = false;
                 driverState = "";
                 h.removeCallbacks(loginTimeout);
             }
             private void inject(WebView v) {
-                if (fetching && pageCommitted && !activeToken.isEmpty() && Core.isSchoolUrl(v.getUrl())) Core.injectDriver(MainActivity.this, v, activeToken);
+                if (v == fetch && fetching && pageCommitted && !activeToken.isEmpty() && Core.isSchoolUrl(v.getUrl())) Core.injectDriver(MainActivity.this, v, activeToken);
             }
-            @Override public void onPageCommitVisible(WebView v, String url) { pageCommitted = true; inject(v); }
+            @Override public void onPageCommitVisible(WebView v, String url) { if (v != fetch) return; pageCommitted = true; inject(v); }
             @Override public void onPageFinished(WebView v, String url) {
+                if (v != fetch) return;
                 if (url != null && url.equals(v.getUrl())) pageCommitted = true;
                 inject(v);
             }
-            @Override public void doUpdateVisitedHistory(WebView v, String url, boolean reload) { pageStep(url); inject(v); }
+            @Override public void doUpdateVisitedHistory(WebView v, String url, boolean reload) { if (v == fetch) { pageStep(url); inject(v); } }
             @Override public void onReceivedError(WebView v, WebResourceRequest r, WebResourceError error) {
-                if (r.isForMainFrame() && fetching && Core.isSchoolUrl(r.getUrl().toString())) retryFetch("network");
+                if (v == fetch && r.isForMainFrame() && fetching && Core.isSchoolUrl(r.getUrl().toString())) retryFetch("network");
             }
             @Override public void onReceivedHttpError(WebView v, WebResourceRequest r, WebResourceResponse response) {
-                if (r.isForMainFrame() && fetching && response.getStatusCode() >= 500) retryFetch("server");
+                if (v == fetch && r.isForMainFrame() && fetching && response.getStatusCode() >= 500) retryFetch("server");
+            }
+            @Override public boolean onRenderProcessGone(WebView v, android.webkit.RenderProcessGoneDetail detail) {
+                if (v == fetch) {
+                    if (fetching) { failReason = "renderer"; endFetch("error"); }
+                    destroyFetch();
+                }
+                return true;
             }
         });
     }
@@ -607,8 +778,12 @@ public class MainActivity extends Activity {
 
     private void startFetch() {
         if (fetching) { if (awaitingNetwork && online()) networkChanged(); return; }
+        BgQuery.yield();
+        queryTicket = QueryGate.acquire("foreground");
+        if (queryTicket == 0) return;
+        ensureFetch();
         // 后台查询期间重新登录过：服务器那边旧会话已失效，从首页重新走
-        if (CheckJob.logins != bgLoginsSeen) { bgLoginsSeen = CheckJob.logins; sessionKnown = false; }
+        if (BgQuery.logins != bgLoginsSeen) { bgLoginsSeen = BgQuery.logins; sessionKnown = false; }
         fetching = true;
         queriedThisOpen = true;
         queryId++;
@@ -616,6 +791,7 @@ public class MainActivity extends Activity {
         loginRedirects = 0;
         loginSubmissions = 0;
         queryDuration = 0;
+        failReason = "";
         fetchStart = SystemClock.elapsedRealtime();
         Log.i("dianfei", "fetch start");
         loadQueryPage();
@@ -676,8 +852,7 @@ public class MainActivity extends Activity {
         h.removeCallbacks(timeout);
         h.removeCallbacks(retryLoad);
         h.removeCallbacks(otherTimer);
-        Core.stopScripts(fetch);
-        fetch.stopLoading();
+        if (fetch != null) { Core.stopScripts(fetch); fetch.stopLoading(); }
     }
 
     private void pauseForNetwork() {
@@ -692,7 +867,7 @@ public class MainActivity extends Activity {
     private void retryFetch(String reason) {
         if (!fetching || awaitingNetwork || sheetShown) return;
         if (!online()) { pauseForNetwork(); return; }
-        if (recoveries >= 1 || SystemClock.elapsedRealtime() - fetchStart >= QUERY_LIMIT) { endFetch("timeout"); return; }
+        if (recoveries >= 1 || SystemClock.elapsedRealtime() - fetchStart >= QUERY_LIMIT) { failReason = reason; endFetch("timeout"); return; }
         recoveries++;
         stopWork();
         setStep("retry");
@@ -708,12 +883,17 @@ public class MainActivity extends Activity {
         awaitingNetwork = false;
         stopWork();
         hideSheet();
-        // 只停止本应用的驱动轮询，保留学校页面的会话给下次刷新使用。
+        QueryGate.release(queryTicket);
+        queryTicket = 0;
+        if (fetch != null) fetch.onPause();
+        // 短时间刷新可复用会话；隐藏学校页30秒后销毁，避免站点自身定时器长期占用渲染线程。
+        h.removeCallbacks(releaseSchool);
+        h.postDelayed(releaseSchool, 30000);
         setFetchState(st);
     }
 
     private boolean validCallback(String token) {
-        return fetching && !awaitingNetwork && token != null && !token.isEmpty() && token.equals(activeToken) && Core.isSchoolUrl(fetch.getUrl());
+        return QueryGate.valid(queryTicket) && fetching && !awaitingNetwork && fetch != null && token != null && !token.isEmpty() && token.equals(activeToken) && Core.isSchoolUrl(fetch.getUrl());
     }
 
     private class Driver {
@@ -792,12 +972,13 @@ public class MainActivity extends Activity {
 
     private void onDriverResult(String json) {
         try {
+            if (!QueryGate.valid(queryTicket)) return;
             Core.saveResult(this, json);
             Core.clearActionNotice(this);
             sessionKnown = true;
             pushState();
             endFetch("ok");
-        } catch (Exception ex) { endFetch("error"); }
+        } catch (Exception ex) { failReason = "parse"; endFetch("error"); }
     }
 
     // ---------------- 本地账号与自动登录 ----------------
@@ -853,26 +1034,22 @@ public class MainActivity extends Activity {
                 try {
                     credentials.save(name, password, auto.isChecked());
                     dialog.dismiss();
-                    pushState();
                     Toast.makeText(this, auto.isChecked() ? "已加密保存，正在自动登录" : "已加密保存，自动登录已关闭", Toast.LENGTH_SHORT).show();
-                    if (auto.isChecked()) {
-                        sessionKnown = false;
-                        if (fetching) endFetch("idle");
-                        startFetch();
-                    }
+                    boolean changedAccount = saved != null && !name.equals(saved.optString("username"));
+                    resetSchoolSession(changedAccount, () -> { if (auto.isChecked()) startFetch(); });
                 } catch (Exception ex) {
                     Toast.makeText(this, "账号保存失败，请重新填写或检查系统版本", Toast.LENGTH_LONG).show();
                 }
             });
             if (credentials.hasSaved()) dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
                 new AlertDialog.Builder(this).setTitle("清除本机保存的账号？")
-                        .setMessage("同时关闭自动登录。宿舍和电费记录会保留。当前网页会话仍可继续使用。")
+                        .setMessage("同时关闭自动登录并退出学校网页会话。电费档案会保留。")
                         .setNegativeButton("取消", null).setPositiveButton("清除", (confirm, which) -> {
                             try {
                                 if (fetching) endFetch("idle");
                                 credentials.clear();
                                 dialog.dismiss();
-                                pushState();
+                                resetSchoolSession(false, () -> {});
                                 Toast.makeText(this, "已清除账号并关闭自动登录", Toast.LENGTH_SHORT).show();
                             } catch (Exception ex) { Toast.makeText(this, "清除失败，请重试", Toast.LENGTH_SHORT).show(); }
                         }).show();
@@ -1009,7 +1186,8 @@ public class MainActivity extends Activity {
         w.clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS);
         w.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
         w.setStatusBarColor(bg);
-        w.setNavigationBarColor(bg);
+        w.setNavigationBarColor(Build.VERSION.SDK_INT >= 30 ? Color.TRANSPARENT : bg);
+        if (Build.VERSION.SDK_INT >= 29) w.setNavigationBarContrastEnforced(false);
         View d = w.getDecorView();
         int light = 0;
         if (Build.VERSION.SDK_INT >= 23) light |= View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
@@ -1019,6 +1197,12 @@ public class MainActivity extends Activity {
         root.setBackgroundColor(bg);
         ui.setBackgroundColor(bg);
         styleSheetHead();
+    }
+
+    private void pushInsets() {
+        if (!uiReady || navBottom < 0) return;
+        float d = getResources().getDisplayMetrics().density;
+        ui.evaluateJavascript("document.documentElement.style.setProperty('--sab','" + Math.round(navBottom / d) + "px')", null);
     }
 
     private void doHaptic(String k) {
@@ -1046,9 +1230,9 @@ public class MainActivity extends Activity {
         super.onResume();
         foreground = true;
         inForeground = true;
-        CheckJob.yield(); // 后台恰好在查：让给前台，首页自己会查
+        BgQuery.yield(); // 后台恰好在查：让给前台，首页自己会查
         ui.onResume();
-        fetch.onResume();
+        if (fetch != null && fetching) fetch.onResume();
         if (uiReady) {
             pushState();
             maybeAutoFetch();
@@ -1062,19 +1246,22 @@ public class MainActivity extends Activity {
         inForeground = false;
         // 切到后台时界面的电池波纹等动画不必再跑；正在查询时学校页面照常走完（比如切去微信等结果）
         ui.onPause();
-        if (!fetching) fetch.onPause();
+        if (!fetching && fetch != null) fetch.onPause();
         CookieManager.getInstance().flush();
         DianfeiWidget.update(this); // 离开应用时同步小组件（提醒线等设置可能改过）
     }
 
     @Override
     protected void onDestroy() {
+        destroyed = true;
+        QueryGate.release(queryTicket);
         fetching = false;
         if (connectivity != null && networkCallback != null) {
             try { connectivity.unregisterNetworkCallback(networkCallback); } catch (Exception ignored) {}
         }
         h.removeCallbacksAndMessages(null);
-        if (fetch != null) { fetch.stopLoading(); fetch.destroy(); }
+        destroyFetch();
+        io.shutdown();
         if (ui != null) ui.destroy();
         super.onDestroy();
     }

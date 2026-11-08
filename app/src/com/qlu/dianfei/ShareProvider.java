@@ -24,7 +24,7 @@ public class ShareProvider extends ContentProvider {
 
     private File file(Uri u) throws FileNotFoundException {
         String name = u.getLastPathSegment();
-        if (name == null || !name.matches("[a-z0-9-]+\\.png")) throw new FileNotFoundException();
+        if (name == null || !name.matches("(?:dianfei-card\\.png|dianfei-[0-9-]+\\.(?:csv|json))")) throw new FileNotFoundException();
         File f = new File(new File(getContext().getCacheDir(), DIR), name);
         if (!f.isFile()) throw new FileNotFoundException();
         return f;
@@ -32,7 +32,10 @@ public class ShareProvider extends ContentProvider {
 
     @Override public boolean onCreate() { return true; }
 
-    @Override public String getType(Uri u) { return "image/png"; }
+    @Override public String getType(Uri u) {
+        String name = u.getLastPathSegment();
+        return name != null && name.endsWith(".json") ? "application/json" : name != null && name.endsWith(".csv") ? "text/csv" : "image/png";
+    }
 
     @Override
     public ParcelFileDescriptor openFile(Uri u, String mode) throws FileNotFoundException {
