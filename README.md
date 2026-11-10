@@ -1,20 +1,48 @@
-# 校园电费
+<div align="center">
 
-齐鲁工业大学宿舍电费查询的安卓小应用（包名 `com.qlu.dianfei`），当前版本 **1.8.1**。在本机 WebView 里打开学校官方缴费平台，自动登录、选校区宿舍、读出余额，然后在本地做用电统计和提醒。**没有自建服务器**，也不提供充值：“去充值”只复制公众号名称并打开微信。
+# ⚡ 校园电费
 
-> 个人开发、免费，非齐鲁工业大学或缴费平台官方应用。数据以缴费平台显示为准；日均用电、可用天数都是推算，仅供参考，不应作为唯一的停电提醒。
+**齐鲁工业大学宿舍电费查询 · 用电统计 · 低余额提醒 · 桌面小组件**
+
+<img src="https://img.shields.io/badge/版本-1.8.1-blue?style=flat-square" />
+<img src="https://img.shields.io/badge/platform-Android-green?style=flat-square&logo=android&logoColor=white" />
+<img src="https://img.shields.io/badge/language-Java-red?style=flat-square&logo=java&logoColor=white" />
+<img src="https://img.shields.io/badge/license-MIT-yellow?style=flat-square" />
+<img src="https://img.shields.io/badge/状态-非官方-orange?style=flat-square" />
+
+[下载最新版](https://github.com/Leon-Cjl/campus-dianfei/releases)
+
+</div>
+
+---
+
+> ## ⚠️ 免责声明
+>
+> **本项目为个人开发、免费的非官方应用，与齐鲁工业大学及缴费平台无任何官方关联。**
+>
+> - 数据以缴费平台显示为准。
+> - 日均用电、可用天数均为推算，仅供参考，**不应作为唯一的停电提醒**。
+> - 应用只在本机 WebView 里打开学校官方缴费平台，**没有自建服务器**，不提供充值功能。
+> - "去充值"只复制公众号名称并打开微信，不涉及任何资金操作。
+> - 账号密码用 Android Keystore（AES-GCM）加密存在应用私有目录。
+
+---
 
 ![宣传图](docs/promo.png)
 
 ## 功能
 
-- **自动登录与查询**：学校账号密码用 Android Keystore（AES-GCM）加密存在应用私有目录；会话有效时直接复用，失效自动重登；网络异常自动恢复一次。验证码由用户手动完成。
-- **用电统计**：日均用电（按余额实际变化的时长分摊）、今天 / 近 7 天 / 本月、用电日历、走势图、月度对比、充值识别。
-- **提醒与后台查询**：支持低余额提醒、每日查询和假期模式；后台表现受系统限制。
-- **桌面小组件**：剩余电费、还能用几天、上次查询时间，跟随深浅色。
-- 读数只存本机，最近 120 天按规则压缩保存。
+| 功能 | 说明 |
+|---|---|
+| 🔐 **自动登录与查询** | 会话有效时直接复用，失效自动重登；网络异常自动恢复一次 |
+| 📊 **用电统计** | 日均用电、今天 / 近 7 天 / 本月、用电日历、走势图、月度对比、充值识别 |
+| 🔔 **提醒与后台查询** | 低余额提醒、每日查询和假期模式；后台表现受系统限制 |
+| 📱 **桌面小组件** | 剩余电费、还能用几天、上次查询时间，跟随深浅色 |
+| 💾 **本地存储** | 读数只存本机，最近 120 天按规则压缩保存 |
 
-## 源码
+> 验证码由用户手动完成。1.8.1 新增按宿舍和电表分档、备份导出与查询互斥。历史改动见 [CHANGELOG.md](CHANGELOG.md)。
+
+## 源码结构
 
 | 文件 | 用途 |
 |---|---|
@@ -26,27 +54,27 @@
 | `app/assets/driver.js` | 学校校区、宿舍、余额页面驱动 |
 | `app/assets/app.js` | 本地界面与状态显示 |
 
-1.8.1 新增按宿舍和电表分档、备份导出与查询互斥，旧记录需确认归属；学校实际登录和全天后台表现仍待进一步验证。历史改动见 [CHANGELOG.md](CHANGELOG.md)。
-
 ## 构建
 
 不用 Gradle，`build.ps1` 直接调 aapt2 / javac / d8 / apksigner：
 
 ```powershell
 $env:JAVA_HOME = 'C:\Program Files\Android\Android Studio\jbr'   # JDK 17+
-$env:ANDROID_SDK_ROOT = "$env:LOCALAPPDATA\Android\Sdk"           # 需要 build-tools 36.0.0、platforms android-37.0
+$env:ANDROID_SDK_ROOT = "$env:LOCALAPPDATA\Android\Sdk"           # build-tools 36.0.0、platforms android-37.0
 .\build.ps1          # 输出 build\校园电费-<版本>.apk
-.\build.ps1 -WebDebug  # 诊断包：开 WebView 调试，包名 com.qlu.dianfei.debug
+.\build.ps1 -WebDebug  # 诊断包：开 WebView 调试
 ```
 
-第一次构建会在仓库根目录生成 `debug.keystore`（已在 `.gitignore` 里）。用不同签名打的包不能覆盖安装作者发布的安装包。构建建议放在英文路径下（aapt2 对中文路径支持不好）。
+> 第一次构建会在仓库根目录生成 `debug.keystore`（已在 `.gitignore` 里）。用不同签名打的包不能覆盖安装作者发布的安装包。构建建议放在英文路径下。
 
 ## 测试
 
-- `tests/run-tests.ps1`（先跑一次 `build.ps1`）：登录与驱动流程测试、记录压缩性质测试、310 组 Java/JS 用电算法对拍。
-- `node --test tests/login.test.cjs tests/rate.test.cjs`：Node 单元测试。
-- `node tests/preview-server.cjs`：在电脑浏览器里用演示数据预览界面（http://localhost:8765）。
-- `tests/*-acceptance.cjs`、`cold-login-test.cjs`、`profile-query.cjs`：真机验收，需要诊断包和 adb，诊断只输出状态和计数，不输出账号密码。
+| 命令 | 说明 |
+|---|---|
+| `tests/run-tests.ps1` | 登录与驱动流程测试、记录压缩性质测试、310 组 Java/JS 用电算法对拍 |
+| `node --test tests/login.test.cjs tests/rate.test.cjs` | Node 单元测试 |
+| `node tests/preview-server.cjs` | 电脑浏览器用演示数据预览界面（http://localhost:8765） |
+| `tests/*-acceptance.cjs` | 真机验收（需要诊断包和 adb，只输出状态和计数，不输出账号密码） |
 
 ## 参与开发
 
