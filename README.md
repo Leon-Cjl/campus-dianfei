@@ -4,7 +4,7 @@
 
 **齐鲁工业大学宿舍电费查询 · 用电统计 · 低余额提醒 · 桌面小组件**
 
-<img src="https://img.shields.io/badge/版本-1.8.1-blue?style=flat-square" />
+<img src="https://img.shields.io/badge/版本-1.9.4-blue?style=flat-square" />
 <img src="https://img.shields.io/badge/platform-Android-green?style=flat-square&logo=android&logoColor=white" />
 <img src="https://img.shields.io/badge/language-Java-red?style=flat-square&logo=java&logoColor=white" />
 <img src="https://img.shields.io/badge/license-MIT-yellow?style=flat-square" />
@@ -29,6 +29,11 @@
 ---
 
 ![宣传图](docs/promo.png)
+
+## 1.9.4 更新
+
+- 兼容余额页“表具通讯地址”标签与六位小数；修复 SSO 跳转、余额身份读取与底栏交互。
+- 本版自动回归通过；真实手机余额查询尚未复测。演示数据使用虚构宿舍和电表。
 
 ## 功能
 
@@ -65,9 +70,12 @@ $env:ANDROID_SDK_ROOT = "$env:LOCALAPPDATA\Android\Sdk"           # build-tools 
 .\build.ps1 -WebDebug  # 诊断包：开 WebView 调试
 ```
 
-> 第一次构建会在仓库根目录生成 `debug.keystore`（已在 `.gitignore` 里）。用不同签名打的包不能覆盖安装作者发布的安装包。构建建议放在英文路径下。
+> 构建前需准备自己的 `debug.keystore`，或设置 `DIANFEI_SIGNING_KEY` 指向现有签名文件；脚本不会自动生成签名。用不同签名打的包不能覆盖安装作者发布的安装包。构建建议放在英文路径下。
 
 ## 测试
+
+浏览器测试需要自行安装 `playwright-core` 和 Chrome；测试脚本依赖 `JAVA_HOME` 与 `ANDROID_SDK_ROOT`。
+
 
 | 命令 | 说明 |
 |---|---|

@@ -11,7 +11,7 @@ final class BalanceParser {
     static final String SCHOOL_CNY = "qlu-sinojy:SL321110:remaining:CNY:v1";
     private static final String UNIT = "(?:人民币元|人民币|CNY|RMB|[¥￥]|元)";
     private static final Pattern MONEY = Pattern.compile(
-            "^([+-]?)\\s*(" + UNIT + ")?\\s*([+-]?)\\s*([0-9]+(?:\\.[0-9]{1,4})?)\\s*(" + UNIT + ")?$",
+            "^([+-]?)\\s*(" + UNIT + ")?\\s*([+-]?)\\s*([0-9]+(?:\\.[0-9]{1,6})?)\\s*(" + UNIT + ")?$",
             Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
 
     static final class Amount {
@@ -26,7 +26,7 @@ final class BalanceParser {
                 .replace('\u00a0', ' ').replace('\u202f', ' ').replace('\u3000', ' ').trim();
         Matcher m = MONEY.matcher(s);
         if (!m.matches() || (!m.group(1).isEmpty() && !m.group(3).isEmpty()))
-            throw new IllegalArgumentException("余额须为人民币金额，最多四位小数");
+            throw new IllegalArgumentException("余额须为人民币金额，最多六位小数");
         boolean explicit = m.group(2) != null || m.group(5) != null;
         if (!explicit && !SCHOOL_CNY.equals(bareContract))
             throw new IllegalArgumentException("无单位余额缺少学校 CNY 契约");

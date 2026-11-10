@@ -1,4 +1,4 @@
-﻿# 独立、无网络权限的测试 APK，验证真机 Keystore 与跨进程恢复；测试后卸载。
+# 独立、无网络权限的测试 APK，验证真机 Keystore 与跨进程恢复；测试后卸载。
 $ErrorActionPreference = 'Stop'
 $P = Split-Path -Parent $PSScriptRoot
 $W = Join-Path $P 'build\device-test'

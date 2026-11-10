@@ -50,7 +50,6 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.ByteArrayInputStream;
-import java.util.Map;
 
 /**
  * 校园电费 —— 原生壳。驱动脚本、读数存储、预警与每日闹钟在 Core，每日后台查询在 BgQuery。
@@ -82,9 +81,12 @@ public class MainActivity extends Activity {
     private int bgLoginsSeen = BgQuery.logins;
     private boolean pendingWeChat = false;
     private SharedPreferences sp;
+    private ElectricityRepository repository;
+    private ElectricityViewModel viewModel;
+    private long savedResultTicket;
     private CredentialStore credentials;
     private boolean loginAttempted = false, queriedThisOpen = false;
-    private boolean sessionKnown = false, awaitingNetwork = false, foreground = false, pageCommitted = false;
+    private boolean sessionKnown = false, awaitingNetwork = false, foreground = false;
     private int recoveries = 0, loginRedirects = 0, loginSubmissions = 0;
     private long queryDuration = 0;
     private long queryId = 0, documentId = 0;
@@ -92,7 +94,9 @@ public class MainActivity extends Activity {
     private boolean destroyed;
     private final java.util.concurrent.ExecutorService io = java.util.concurrent.Executors.newSingleThreadExecutor();
     private final java.util.concurrent.atomic.AtomicBoolean operationBusy = new java.util.concurrent.atomic.AtomicBoolean();
-    private final Runnable releaseSchool = () -> { if (!this.fetching && !this.sheetShown) destroyFetch(); };
+    private final Runnable schoolProbe = this::probeSchoolPage;
+    private boolean bootstrapFallback;
+    private String handledLoginToken = "";
     private String activeToken = "", fetchStep = "connect";
     private ConnectivityManager connectivity;
     private ConnectivityManager.NetworkCallback networkCallback;
@@ -122,8 +126,28 @@ public class MainActivity extends Activity {
         super.onCreate(b);
         sp = getSharedPreferences("df", Context.MODE_PRIVATE);
         credentials = new CredentialStore(this);
-        ReadingStore.migrate(this);
-        Core.migrate(this);
+        ElectricityRepository.initialize(this);
+        viewModel = new ElectricityViewModel(h, state -> {
+            if (uiReady && !destroyed) ui.evaluateJavascript("window.DF&&DF.onState(" + state + ")", null);
+            else uiStale = true;
+        });
+        repository = new ElectricityRepository(this, h, new LatestSnapshot.Observer<String>() {
+            @Override public void changed(String data) {
+                if (destroyed) return;
+                viewModel.data(data);
+                if (savedResultTicket != 0 && savedResultTicket == queryTicket && QueryGate.valid(queryTicket)) {
+                    savedResultTicket = 0;
+                    endFetch("ok");
+                }
+            }
+            @Override public void failed() {
+                if (destroyed) return;
+                viewModel.failed();
+                if (savedResultTicket != 0) { savedResultTicket = 0; failReason = "storage"; endFetch("error"); }
+            }
+        });
+        updateUiEnvironment();
+        repository.refresh();
         if (WEB_DEBUG) WebView.setWebContentsDebuggingEnabled(true);
         barDark = sysDark();
         barBg = barDark ? 0xFF000000 : 0xFFF7F7F7;
@@ -160,6 +184,7 @@ public class MainActivity extends Activity {
         setupUi();
         watchNetwork();
         try { version = getPackageManager().getPackageInfo(getPackageName(), 0).versionName; } catch (Exception ignore) {}
+        updateUiEnvironment();
         ui.loadUrl(UI_URL);
         // 学校页面和本地界面同时开始加载，不等界面画完再连学校（冷启动省 0.4 秒左右）；界面就绪时补推一次状态
         maybeAutoFetch();
@@ -207,6 +232,7 @@ public class MainActivity extends Activity {
             @Override
             public void onPageFinished(WebView v, String url) {
                 uiReady = true;
+                viewModel.replay(); // Page readiness must replay even when data has not changed.
                 pushInsets();
                 if (uiStale) { uiStale = false; pushState(); }
                 if (pendingWeChat) { pendingWeChat = false; ui.evaluateJavascript("window.DF&&DF.wechat()", null); }
@@ -243,6 +269,12 @@ public class MainActivity extends Activity {
             });
         }
         @JavascriptInterface public void refresh() { h.post(MainActivity.this::startFetch); }
+        @JavascriptInterface public void showSchool() {
+            h.post(() -> {
+                if (!fetching) startFetch();
+                if (fetching && fetch != null) showSheet(Core.isSchoolLogin(fetch.getUrl()) ? "login" : "other");
+            });
+        }
 
         /** 分享余额卡片：弹出系统分享面板（微信、QQ 等），图片只临时授权给选中的应用 */
         @JavascriptInterface
@@ -292,7 +324,7 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public void setPref(String k, String v) {
-            if (k != null) sp.edit().putString("p_" + k, v == null ? "" : v).apply();
+            repository.setPreference(k, v);
         }
 
         @JavascriptInterface
@@ -301,7 +333,7 @@ public class MainActivity extends Activity {
                 BgQuery.yield();
                 if (fetching) endFetch("idle");
                 QueryGate.invalidate();
-                ReadingStore.detach(MainActivity.this);
+                repository.detach();
                 sp.edit().remove("room").remove("campus").apply();
                 destroyFetch();
                 pushState();
@@ -315,7 +347,7 @@ public class MainActivity extends Activity {
                 BgQuery.yield();
                 if (fetching) endFetch("idle");
                 QueryGate.invalidate();
-                ReadingStore.clearActive(MainActivity.this);
+                repository.clearActive();
                 sp.edit().remove("p_badges").remove("p_badgesInit").apply();
                 pushState();
             });
@@ -323,20 +355,20 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface public void claimLegacy() {
             h.post(() -> {
-                try { ReadingStore.claimLegacy(MainActivity.this); pushState(); }
+                try { repository.claimLegacy(); pushState(); }
                 catch (Exception ex) { operationResult("claim", false, "请先查询当前宿舍，再确认旧记录归属"); }
             });
         }
 
         @JavascriptInterface public boolean exportCsvAsync() {
             return runIo("csv", () -> {
-                String text = Core.historyCsv(MainActivity.this);
+                String text = repository.historyCsv();
                 if (text == null) throw new java.io.IOException("还没有记录可以导出");
                 return exportText("csv", "text/csv", "\uFEFF" + text) ? "CSV 已保存到下载/校园电费" : null;
             });
         }
         @JavascriptInterface public boolean exportBackup() {
-            return runIo("backup", () -> exportText("json", "application/json", ReadingStore.backupJson(MainActivity.this).toString()) ? "数据备份已保存，不含账号密码" : null);
+            return runIo("backup", () -> exportText("json", "application/json", repository.backupJson()) ? "数据备份已保存，不含账号密码" : null);
         }
         @JavascriptInterface public boolean saveImageAsync(String b64) {
             return runIo("save-image", () -> { if (!saveImage(b64)) throw new java.io.IOException("保存失败；Android 10 以下可使用分享保存"); return "图片已存到相册/校园电费"; });
@@ -417,7 +449,7 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public String exportCsv() {
             try {
-                String csv = Core.historyCsv(MainActivity.this);
+                String csv = repository.historyCsv();
                 if (csv == null) return "empty";
                 String name = "校园电费记录-" + new java.text.SimpleDateFormat("yyyyMMdd-HHmm", java.util.Locale.CHINA).format(new java.util.Date()) + ".csv";
                 if (Build.VERSION.SDK_INT >= 29) {
@@ -524,7 +556,7 @@ public class MainActivity extends Activity {
         if (fetching) endFetch("idle");
         QueryGate.invalidate();
         destroyFetch();
-        if (detach) ReadingStore.detach(this);
+        if (detach) repository.detach();
         android.webkit.WebStorage.getInstance().deleteOrigin("https://qlgydx.mp.sinojy.cn");
         CookieManager.getInstance().removeAllCookies(value -> { if (!destroyed) { pushState(); after.run(); } });
     }
@@ -612,59 +644,47 @@ public class MainActivity extends Activity {
         if (code == REQ_NOTIFY) pushState();
     }
 
-    private String stateJson() {
+    private String stateJson() { return viewModel.state(); }
+
+    private String environmentJson() {
         try {
             JSONObject o = new JSONObject();
-            JSONArray hist = new JSONArray(sp.getString("hist", "[]"));
-            o.put("hist", hist);
-            o.put("storage", ReadingStore.summary(this));
-            o.put("room", sp.getString("room", ""));
-            o.put("campus", sp.getString("campus", ""));
-            o.put("addr", sp.getString("addr", ""));
-            o.put("meter", sp.getString("meter", ""));
-            o.put("status", sp.getString("status", ""));
-            long last = hist.length() > 0 ? hist.getJSONArray(hist.length() - 1).getLong(0) : 0;
-            o.put("lastFetch", sp.getLong("lastFetch", last));
             o.put("sysDark", sysDark());
             o.put("fetch", fetchState);
             o.put("fetchStep", fetchStep);
             o.put("version", version);
             o.put("login", credentials.metadata().put("submitted", loginSubmissions));
             o.put("queryMs", queryDuration);
+            o.put("queryId", queryId);
             o.put("queryRetries", recoveries);
             o.put("notifyAllowed", Core.notifyAllowed(this));
             o.put("wechat", getPackageManager().getLaunchIntentForPackage(Core.WECHAT) != null);
-            o.put("nextAuto", sp.getLong("nextAuto", 0));
             o.put("fetchReason", failReason);
-            o.put("bgLast", sp.getString("bgLast", ""));
-            o.put("alarmMiss", sp.getInt("alarmMiss", 0));
-            JSONObject p = new JSONObject();
-            for (Map.Entry<String, ?> en : sp.getAll().entrySet()) {
-                if (en.getKey().startsWith("p_")) p.put(en.getKey().substring(2), String.valueOf(en.getValue()));
-            }
-            o.put("prefs", p);
             return o.toString();
         } catch (Exception e) {
-            return "{\"hist\":[],\"prefs\":{}}";
+            return "{}";
         }
     }
 
-    // 界面还没加载完时先记下来，onPageFinished 里补推一次完整状态
+    // One immutable UiState channel. Query/progress changes reuse the repository's cached data.
+    private void updateUiEnvironment() {
+        if (!destroyed && viewModel != null) viewModel.environment(environmentJson());
+    }
+
     private void pushState() {
-        if (uiReady) ui.evaluateJavascript("window.DF&&DF.onState(" + stateJson() + ")", null);
-        else uiStale = true;
+        if (destroyed) return;
+        updateUiEnvironment();
+        repository.refresh();
     }
 
     private void setFetchState(String st) {
         fetchState = st;
-        if (uiReady) ui.evaluateJavascript("window.DF&&DF.onFetch('" + st + "'," + JSONObject.quote(failReason) + ")", null);
-        else uiStale = true;
+        updateUiEnvironment();
     }
 
     // ---------------- 取数 ----------------
 
     private void ensureFetch() {
-        h.removeCallbacks(releaseSchool);
         if (fetch == null) {
             fetch = new WebView(this);
             sheetBox.addView(fetch, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
@@ -675,7 +695,6 @@ public class MainActivity extends Activity {
     }
 
     private void destroyFetch() {
-        h.removeCallbacks(releaseSchool);
         WebView old = fetch;
         fetch = null;
         sessionKnown = false;
@@ -702,22 +721,20 @@ public class MainActivity extends Activity {
         fetch.addJavascriptInterface(new Driver(), "DF");
         fetch.setWebViewClient(new WebViewClient() {
             @Override public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) {
-                return !Core.isSchoolUrl(r.getUrl().toString());
+                return !Core.isSchoolNavigation(r.getUrl().toString());
             }
             @Override public void onPageStarted(WebView v, String url, android.graphics.Bitmap icon) {
                 if (v != fetch || !fetching || activeToken.isEmpty()) return;
                 activeToken = queryId + ":" + (++documentId);
-                pageCommitted = false;
                 driverState = "";
                 h.removeCallbacks(loginTimeout);
             }
             private void inject(WebView v) {
-                if (v == fetch && fetching && pageCommitted && !activeToken.isEmpty() && Core.isSchoolUrl(v.getUrl())) Core.injectDriver(MainActivity.this, v, activeToken);
+                if (v == fetch && fetching && !activeToken.isEmpty() && Core.isSchoolUrl(v.getUrl())) Core.injectDriver(MainActivity.this, v, activeToken);
             }
-            @Override public void onPageCommitVisible(WebView v, String url) { if (v != fetch) return; pageCommitted = true; inject(v); }
+            @Override public void onPageCommitVisible(WebView v, String url) { if (v == fetch) inject(v); }
             @Override public void onPageFinished(WebView v, String url) {
                 if (v != fetch) return;
-                if (url != null && url.equals(v.getUrl())) pageCommitted = true;
                 inject(v);
             }
             @Override public void doUpdateVisitedHistory(WebView v, String url, boolean reload) { if (v == fetch) { pageStep(url); inject(v); } }
@@ -781,12 +798,20 @@ public class MainActivity extends Activity {
         BgQuery.yield();
         queryTicket = QueryGate.acquire("foreground");
         if (queryTicket == 0) return;
-        ensureFetch();
+        try { ensureFetch(); }
+        catch (RuntimeException ex) {
+            QueryGate.release(queryTicket);
+            queryTicket = 0;
+            failReason = "webview";
+            setFetchState("error");
+            return;
+        }
         // 后台查询期间重新登录过：服务器那边旧会话已失效，从首页重新走
         if (BgQuery.logins != bgLoginsSeen) { bgLoginsSeen = BgQuery.logins; sessionKnown = false; }
         fetching = true;
         queriedThisOpen = true;
         queryId++;
+        bootstrapFallback = false;
         recoveries = 0;
         loginRedirects = 0;
         loginSubmissions = 0;
@@ -799,8 +824,7 @@ public class MainActivity extends Activity {
 
     private void setStep(String step) {
         fetchStep = step;
-        if (uiReady) ui.evaluateJavascript("window.DF&&DF.onProgress(" + JSONObject.quote(step) + ")", null);
-        else uiStale = true;
+        updateUiEnvironment();
     }
 
     /**
@@ -841,17 +865,65 @@ public class MainActivity extends Activity {
         setFetchState("working");
         armTimeout();
         // 冷启动先完成学校首页初始化；同一进程保留有效会话，直接查询。
-        pageCommitted = false;
         fetch.loadUrl(sessionKnown ? ENTRY_URL : Core.HOME_URL);
+        h.removeCallbacks(schoolProbe);
+        h.postDelayed(schoolProbe, SchoolPagePolicy.PROBE_MS);
+    }
+
+    /** Login recovery must not depend on the driver's JavascriptInterface notification.
+     * Inspect the current document through the evaluation callback as a second channel. */
+    private void probeSchoolPage() {
+        if (!fetching || awaitingNetwork || fetch == null || activeToken.isEmpty()) return;
+        String url = fetch.getUrl();
+        if (Core.isSchoolUrl(url)) {
+            Core.injectDriver(this, fetch, activeToken);
+            probeSchoolDocument();
+            if (!sheetShown && SchoolPagePolicy.revealPage(SystemClock.elapsedRealtime() - fetchStart,
+                    sessionKnown, bootstrapFallback, Uri.parse(url).getPath())) {
+                bootstrapFallback = true;
+                // The homepage creates SSO query parameters. A bare /SL200000 discards them.
+                showSheet("other");
+                sheetSub.setText("学校页面加载较慢，可在此继续；右侧可重新连接登录入口");
+            }
+        }
+        if (fetching && !activeToken.isEmpty()) h.postDelayed(schoolProbe, SchoolPagePolicy.PROBE_MS);
+    }
+
+    private void probeSchoolDocument() {
+        final WebView page = fetch;
+        final String token = activeToken;
+        String expected = page.getUrl();
+        String script = "(function(){try{if(document.readyState==='loading'||location.href!==new URL("
+                + JSONObject.quote(expected) + ").href)return null;return JSON.stringify({login:/^\\/SL200000\\/?$/.test(location.pathname),"
+                + "hasSession:!!sessionStorage.getItem('loginData'),service:/^\\/SL3/.test(location.pathname)});}catch(e){return null;}})()";
+        page.evaluateJavascript(script, result -> {
+            if (page != fetch || !validCallback(token) || result == null || "null".equals(result)) return;
+            try {
+                String json = new JSONArray("[" + result + "]").getString(0);
+                JSONObject status = new JSONObject(json);
+                if (status.optBoolean("login") && Core.isSchoolLogin(page.getUrl())) handleLoginPage();
+                else if (status.optBoolean("service") && status.optBoolean("hasSession")) sessionKnown = true;
+            } catch (Exception ignored) { /* Navigating documents will be probed again. */ }
+        });
+    }
+
+    private void handleLoginPage() {
+        if (handledLoginToken.equals(activeToken)) return;
+        handledLoginToken = activeToken;
+        sessionKnown = false;
+        driverState = "login";
+        if (tryAutoLogin()) return;
+        loginFallback(credentials.needsAttention() ? "学校提示账号或密码有误，请点「账号」更新" :
+                loginAttempted ? "学校仍要求登录，请核对账号或手动处理" : "可点右侧「账号」管理本机保存的密码");
     }
 
     private void stopWork() {
         activeToken = "";
-        pageCommitted = false;
         h.removeCallbacks(loginTimeout);
         h.removeCallbacks(timeout);
         h.removeCallbacks(retryLoad);
         h.removeCallbacks(otherTimer);
+        h.removeCallbacks(schoolProbe);
         if (fetch != null) { Core.stopScripts(fetch); fetch.stopLoading(); }
     }
 
@@ -880,15 +952,16 @@ public class MainActivity extends Activity {
         Log.i("dianfei", "fetch " + st + " in " + (SystemClock.elapsedRealtime() - fetchStart) + " ms");
         queryDuration = SystemClock.elapsedRealtime() - fetchStart;
         fetching = false;
+        savedResultTicket = 0;
         awaitingNetwork = false;
         stopWork();
         hideSheet();
         QueryGate.release(queryTicket);
         queryTicket = 0;
         if (fetch != null) fetch.onPause();
-        // 短时间刷新可复用会话；隐藏学校页30秒后销毁，避免站点自身定时器长期占用渲染线程。
-        h.removeCallbacks(releaseSchool);
-        h.postDelayed(releaseSchool, 30000);
+        // Preserve sessionStorage while this Activity lives. The paused WebView is destroyed
+        // only with its Activity or an explicit account/room reset; rebuilding it logs in again.
+
         setFetchState(st);
     }
 
@@ -917,20 +990,39 @@ public class MainActivity extends Activity {
             case "need-login":
                 sessionKnown = false;
                 if (loginRedirects++ >= 1 || loginAttempted) { retryFetch("session"); break; }
-                pageCommitted = false;
                 fetch.loadUrl(Core.HOME_URL);
                 break;
             case "login":
                 sessionKnown = false;
                 if (!Core.isSchoolLogin(fetch.getUrl())) { loginFallback("请完成学校账号验证"); break; }
-                if (tryAutoLogin()) break;
-                loginFallback(credentials.needsAttention() ? "学校提示账号或密码有误，请点「账号」更新" :
-                        loginAttempted ? "学校仍要求登录，请核对账号或手动处理" : "可点右侧「账号」管理本机保存的密码");
+                handleLoginPage();
                 break;
             case "pick": case "room":
                 h.removeCallbacks(timeout);
                 showSheet(st);
                 setFetchState(st);
+                break;
+            case "balance-incomplete":
+                h.removeCallbacks(timeout);
+                showSheet("balance");
+                setFetchState("incomplete");
+                final String token = activeToken;
+                fetch.evaluateJavascript("JSON.stringify(window.__DF_READ_STATUS__||{})", result -> {
+                    if (!validCallback(token) || !"balance-incomplete".equals(driverState)) return;
+                    try {
+                        JSONObject status = new JSONObject(new JSONArray("[" + result + "]").getString(0));
+                        JSONArray missing = status.optJSONArray("missing");
+                        java.util.List<String> labels = new java.util.ArrayList<>();
+                        if (missing != null) for (int i=0;i<missing.length();i++) {
+                            String key = missing.optString(i);
+                            if ("campus".equals(key)) labels.add("校区");
+                            else if ("room".equals(key)) labels.add("宿舍号");
+                            else if ("meter".equals(key)) labels.add("电表编号");
+                        }
+                        sheetSub.setText(labels.isEmpty() ? "已读到余额，正在等待学校档案信息" :
+                                "已读到余额，还缺少" + android.text.TextUtils.join("、", labels) + "；请核对学校页面");
+                    } catch (Exception ignored) {}
+                });
                 break;
             case "working":
                 if (!Core.isSchoolLogin(fetch.getUrl())) {
@@ -973,11 +1065,14 @@ public class MainActivity extends Activity {
     private void onDriverResult(String json) {
         try {
             if (!QueryGate.valid(queryTicket)) return;
-            Core.saveResult(this, json);
+            ElectricityRepository.saveResult(this, queryTicket, json);
             Core.clearActionNotice(this);
             sessionKnown = true;
+            // Success is emitted only together with the saved data, never ahead of it.
+            savedResultTicket = queryTicket;
+            stopWork();
+            setStep("saving");
             pushState();
-            endFetch("ok");
         } catch (Exception ex) { failReason = "parse"; endFetch("error"); }
     }
 
@@ -1114,8 +1209,7 @@ public class MainActivity extends Activity {
         sheetHome.setOnClickListener(v -> {
             if ("login".equals(driverState)) { manageAccount(); return; }
             driverState = "";
-            pageCommitted = false;
-            fetch.loadUrl(ENTRY_URL);
+            fetch.loadUrl(sessionKnown ? ENTRY_URL : Core.HOME_URL);
         });
 
         row.addView(sheetClose);
@@ -1158,10 +1252,11 @@ public class MainActivity extends Activity {
         switch (st) {
             case "login": title = "登录学校账号"; sub = "可点右侧「账号」保存密码并开启自动登录"; break;
             case "pick": title = "选择你的校区"; sub = "点「齐鲁工业大学××校区」，以后会自动记住"; break;
-            case "room": title = "输入宿舍号"; sub = "如 20#340，点「下一步」；只需输一次"; break;
+            case "room": title = "输入宿舍号"; sub = "如 99#909，点「下一步」；只需输一次"; break;
+            case "balance": title = "读取学校余额"; sub = "已读到余额，正在等待校区、宿舍和电表信息"; break;
             default: title = "学校页面"; sub = "没自动往下走的话，点「校园充值」"; break;
         }
-        sheetHome.setText("login".equals(st) ? "账号" : "回到电费页");
+        sheetHome.setText("login".equals(st) ? "账号" : sessionKnown ? "回到电费页" : "登录页");
         sheetTitle.setText(title);
         sheetSub.setText(sub);
         if (!sheetShown) {
@@ -1230,6 +1325,8 @@ public class MainActivity extends Activity {
         super.onResume();
         foreground = true;
         inForeground = true;
+        viewModel.start();
+        repository.start();
         BgQuery.yield(); // 后台恰好在查：让给前台，首页自己会查
         ui.onResume();
         if (fetch != null && fetching) fetch.onResume();
@@ -1244,6 +1341,8 @@ public class MainActivity extends Activity {
         super.onPause();
         foreground = false;
         inForeground = false;
+        viewModel.stop();
+        repository.stop();
         // 切到后台时界面的电池波纹等动画不必再跑；正在查询时学校页面照常走完（比如切去微信等结果）
         ui.onPause();
         if (!fetching && fetch != null) fetch.onPause();
@@ -1254,6 +1353,8 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         destroyed = true;
+        if (repository != null) repository.close();
+        if (viewModel != null) viewModel.close();
         QueryGate.release(queryTicket);
         fetching = false;
         if (connectivity != null && networkCallback != null) {

@@ -75,6 +75,7 @@
   // ---------------- 设置 ----------------
   const P = () => S.prefs || (S.prefs = {});
   function setPref(k, v) {
+    if (H && S.dataReady === false) return; // Do not overwrite saved settings before first hydration.
     v = String(v); P()[k] = v;
     if (H) { try { H.setPref(k, v); } catch (e) {} } else { try { localStorage.setItem('df_' + k, v); } catch (e) {} }
   }
@@ -388,7 +389,7 @@
   const head = (title, extra) => '<div class="page-head"><h1>' + title + '</h1>' + (extra || '') + '</div>';
 
   function homeHTML() {
-    if (A.cur == null) return head('电费') + (fetchSt === 'working' ? skeletonHTML() : emptyHTML()) + legacyHTML();
+    if (A.cur == null) return head('电费') + (S.dataReady === false || fetchSt === 'working' ? skeletonHTML() : emptyHTML()) + legacyHTML();
     const t = tone(), lv = level();
     const daysTxt = A.daysLeft == null ? '暂无速度' : A.daysLeft <= 0 ? '已用完' : A.daysLeft >= 99 ? '99+ 天' : fmtDays(A.daysLeft);
     const tag = balanceTag(), sub = balanceSub();
@@ -400,7 +401,7 @@
       '<div class="battery" aria-hidden="true"><div class="cap"></div><div class="cell">' +
       '<div class="wave w1" style="--lv:' + (shownLv == null ? 0 : shownLv) + '"></div><div class="wave w2" style="--lv:' + (shownLv == null ? 0 : shownLv) + '"></div>' + I.bolt +
       '</div><div class="days">' + daysTxt + '</div></div></div>' +
-      '<div class="hero-foot"><span class="fetch-line" id="fetchLine">' + fetchLine() + '</span><button class="btn tonal sm" data-act="wechat">去充值</button></div></section>' +
+      '<div class="hero-foot"><span class="fetch-line" id="fetchLine" role="status" aria-live="polite" aria-atomic="true">' + fetchLine() + '</span><button class="btn tonal sm" data-act="wechat">去充值</button></div></section>' +
       alertHTML() +
       legacyHTML() +
       alarmCardHTML() +
@@ -428,7 +429,7 @@
   const tile = (label, val, sub) => '<div class="tile"><div class="tile-label">' + label + '</div><div class="tile-val">' + val + '</div><div class="tile-sub">' + sub + '</div></div>';
 
   function skeletonHTML() {
-    return '<section class="card hero"><p class="muted small" id="fetchLine">' + fetchLine() + '</p><div class="sk" style="width:90px;height:14px"></div><div class="sk" style="width:190px;height:52px;margin:12px 0"></div><div class="sk" style="width:70%;height:14px"></div></section>' +
+    return '<section class="card hero"><p class="muted small" id="fetchLine" role="status" aria-live="polite" aria-atomic="true">' + fetchLine() + '</p><div class="sk" style="width:90px;height:14px"></div><div class="sk" style="width:190px;height:52px;margin:12px 0"></div><div class="sk" style="width:70%;height:14px"></div></section>' +
       '<div class="tiles"><div class="tile"><div class="sk" style="height:44px"></div></div><div class="tile"><div class="sk" style="height:44px"></div></div><div class="tile"><div class="sk" style="height:44px"></div></div></div>';
   }
   function emptyHTML() {
@@ -437,15 +438,18 @@
   }
 
   function fetchLine() {
+    if (S.dataError) return '本机记录暂时读取失败，请重新打开应用重试';
+    if (S.dataReady === false) return '正在读取本机记录…';
     switch (fetchSt) {
       case 'offline': return '等待网络恢复，连接后自动继续';
       case 'working': return esc(({
         connect: '正在连接学校平台…', form: '正在等待登录页面…', signin: '正在自动登录…', query: '已连接，正在查询余额…',
         home: '已登录，正在进入校园充值…', campus: '正在选择校区…', room: '正在打开宿舍 ' + (S.room || '') + '…', balance: '马上就好，正在读取余额…',
         retry: '连接暂时异常，正在自动重试…'
-      })[S.fetchStep] || '正在查询…');
+      })[S.fetchStep] || (S.fetchStep === 'saving' ? '正在同步本机记录…' : '正在查询…')) + (S.fetchStep === 'saving' ? '' : ' · <button class="link" data-act="school">打开学校页面</button> · <button class="link" data-act="cancel-query">取消</button>');
       case 'login': return '等你登录学校账号…';
       case 'pick': case 'room': return '等你选择宿舍…';
+      case 'incomplete': return '已读到学校余额，正在核对宿舍和电表信息…';
       case 'timeout': case 'error': return esc(maint() ? '学校系统维护中' : failText(fetchReason) || '没查到') + '，<button class="link" data-act="refresh">重试</button>';
       default: return rel(S.lastFetch);
     }
@@ -758,62 +762,109 @@
 
   // 悬浮底栏里选中项下面那块浅色滑块（第一次只放到位，不播动画）；回弹不冲出底栏
   let pillAt = '';
+  function navPillRect(nav, pill) {
+    const r = pill.getBoundingClientRect(), parent = nav.getBoundingClientRect();
+    const sx = parent.width / nav.offsetWidth || 1, sy = parent.height / nav.offsetHeight || 1;
+    return { x: (r.left - parent.left) / sx - nav.clientLeft,
+      y: (r.top - parent.top) / sy - nav.clientTop - 6, w: r.width / sx, h: r.height / sy };
+  }
   function movePill() {
     const nav = $('#nav'), cur = nav && nav.querySelector('button[aria-current=page]');
-    if (!cur) return;
+    // Gesture owns the painted geometry until release. State pushes cannot take it over.
+    if (!cur || nav.classList.contains('dragging')) return;
     let pill = nav.querySelector('.nav-pill');
     if (!pill) { pill = document.createElement('i'); pill.className = 'nav-pill'; pill.setAttribute('aria-hidden', 'true'); nav.prepend(pill); }
-    const x = cur.offsetLeft, w = cur.offsetWidth, at = x + ',' + w;
-    if (at === pillAt || !w) return;
-    const prev = pillAt.split(',').map(Number); pillAt = at;
+    const to = { x: cur.offsetLeft, y: 0, w: cur.offsetWidth, h: Math.max(1, nav.clientHeight - 12) };
+    const at = [to.x, to.w, to.h].join(',');
+    if (at === pillAt || !to.w) return;
+    const ready = pill.classList.contains('ready'), from = ready ? navPillRect(nav, pill) : to;
+    pillAt = at;
     pill.getAnimations().forEach(a => a.cancel());
-    pill.style.width = w + 'px'; pill.style.transform = 'translateX(' + x + 'px)';
-    if (prev.length !== 2 || !pill.classList.contains('ready') || !motionOn() || nav.classList.contains('dragging')) { pill.classList.add('ready'); return; }
-    const [px0, pw] = prev, btns = $$('button[data-page]', nav), h = pill.offsetHeight;
-    pill.animate(liquidFrames({ x: px0, y: 0, w: pw, h }, { x, y: 0, w, h }, Math.min.apply(null, btns.map(b => b.offsetLeft)), Math.max.apply(null, btns.map(b => b.offsetLeft + b.offsetWidth))), { duration: LIQUID_MS, easing: 'linear' });
+    pill.style.width = to.w + 'px'; pill.style.height = to.h + 'px';
+    pill.style.transformOrigin = '0 0'; pill.style.transform = 'translate(' + to.x + 'px,0px)';
+    pill.classList.add('ready');
+    if (!ready || !motionOn() || document.hidden) return;
+    pill.animate(liquidFrames(from, to, 6, nav.clientWidth - 6), { duration: LIQUID_MS, easing: 'linear' });
   }
   function markNav(p) { $$('#nav button').forEach(b => { if (b.dataset.page === p) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); }); }
 
   // 底栏滑块可以按住拖：按住约 0.25 秒或按下后横着拖，滑块浮起来跟着手指走，经过的图标放大、轻震；松手停在哪个就切到哪个
-  const navDrag = { id: null, timer: 0, on: false, x0: 0, over: null, ate: 0 };
-  function navDragMove(nav, x) {
-    const pill = nav.querySelector('.nav-pill'), r = nav.getBoundingClientRect();
-    if (!pill) return;
-    // 拖动时滑块以中心放大，按底栏内侧宽度夹住，贴边时不冒出底栏
-    const w = pill.offsetWidth, grow = w * .06, left = Math.min(Math.max(x - r.left - nav.clientLeft - w / 2, 6 + grow), nav.clientWidth - w - 6 - grow);
-    pill.style.transform = 'translateX(' + left + 'px) scale(1.12, 1.16)';
-    const over = $$('button[data-page]', nav).find(b => { const q = b.getBoundingClientRect(); return x >= q.left && x < q.right; }) || null;
-    if (over !== navDrag.over) { if (navDrag.over) navDrag.over.classList.remove('lens'); if (over) over.classList.add('lens'); if (navDrag.over && over) haptic('tick'); navDrag.over = over; }
-  }
-  function navDragStart(nav, x) { navDrag.on = true; nav.classList.add('dragging'); haptic('tap'); navDragMove(nav, x); }
-  function navDragEnd(nav, commit) {
-    clearTimeout(navDrag.timer);
-    const was = navDrag.on, target = navDrag.over;
-    navDrag.id = null; navDrag.on = false; if (navDrag.over) navDrag.over.classList.remove('lens'); navDrag.over = null;
-    if (!was) return;
-    // 从松手时滑块所在的位置弹到目标，不是先跳回原位再滑
-    const pill = nav.querySelector('.nav-pill'), m = pill && new DOMMatrix(getComputedStyle(pill).transform);
-    nav.classList.remove('dragging'); navDrag.ate = Date.now() + 400; pillAt = pill ? Math.round(m.e) + ',' + pill.offsetWidth : '';
-    if (commit && target && target.dataset.page !== page) go(target.dataset.page); else movePill();
-  }
-  function bindNavDrag() {
-    const nav = $('#nav');
-    nav.addEventListener('pointerdown', e => {
-      if (navDrag.id != null || !nav.querySelector('.nav-pill')) return;
-      navDrag.id = e.pointerId; navDrag.x0 = e.clientX; navDrag.ate = 0;
-      navDrag.timer = setTimeout(() => { if (navDrag.id === e.pointerId) navDragStart(nav, navDrag.x0); }, 250);
-    });
-    nav.addEventListener('pointermove', e => {
-      if (e.pointerId !== navDrag.id) return;
-      if (!navDrag.on && Math.abs(e.clientX - navDrag.x0) > 10) { clearTimeout(navDrag.timer); navDragStart(nav, e.clientX); }
-      if (navDrag.on) { try { nav.setPointerCapture(e.pointerId); } catch (x) {} navDragMove(nav, e.clientX); }
-    });
-    nav.addEventListener('pointerup', e => { if (e.pointerId === navDrag.id) navDragEnd(nav, true); });
-    nav.addEventListener('pointercancel', e => { if (e.pointerId === navDrag.id) navDragEnd(nav, false); });
-    nav.addEventListener('contextmenu', e => e.preventDefault());
-    // 拖完松手时浏览器可能补一个点击：只吃松手后 0.4 秒内的这一次，免得又切回按下时那一页
-    nav.addEventListener('click', e => { if (Date.now() < navDrag.ate) { navDrag.ate = 0; e.preventDefault(); e.stopPropagation(); } }, true);
-  }
+  const navDrag = {id:null,timer:0,frame:0,scaleUntil:0,on:false,x0:0,y0:0,x:0,over:null,ate:0,w:0,h:0,growFrom:null,started:0,captureTarget:null,trackWidth:0};
+  const navButtons = nav => Array.from(nav.querySelectorAll('button[data-page]')).filter(b => !b.hidden);
+function navDragMove(nav,x) {
+ navDrag.x=x;
+ const pill=nav.querySelector('.nav-pill');if (!pill) return;
+ const r=nav.getBoundingClientRect(),sx=r.width/nav.offsetWidth||1,localX=(x-r.left)/sx-nav.clientLeft;
+ const w=Math.min(navDrag.w*(motionOn()?1.12:1),Math.max(1,nav.clientWidth-12)),h=Math.min(navDrag.h*(motionOn()?1.16:1),Math.max(1,nav.clientHeight-4));
+ const left=Math.min(Math.max(localX-w/2,6),nav.clientWidth-6-w),top=(navDrag.h-h)/2;
+ // 统一左上原点；用放大后的可见宽度夹边，指尖在可用范围内始终对齐胶囊中心。
+ const progress=motionOn()?Math.min(1,Math.max(0,(performance.now()-navDrag.started)/180)):1,eased=1-Math.pow(1-progress,3),from=navDrag.growFrom||{x:left,y:top,w,h};
+ const shown={x:from.x+(left-from.x)*eased,y:from.y+(top-from.y)*eased,w:from.w+(w-from.w)*eased,h:from.h+(h-from.h)*eased};
+ pill.style.transform='translate('+shown.x+'px,'+shown.y+'px) scale('+shown.w/navDrag.w+','+shown.h/navDrag.h+')';
+ const over=navButtons(nav).find(b => { const q=b.getBoundingClientRect();return x>=q.left && x<q.right; })||null;
+ if (over !== navDrag.over) { navDrag.over?.classList.remove('lens');over?.classList.add('lens');if (navDrag.over&&over) haptic('tick');navDrag.over=over; }
+}
+function navDragStart(nav,x) {
+ if (navDrag.on || navDrag.id == null) return;
+ const pill=nav.querySelector('.nav-pill');if (!pill) return;
+ if (pressed && nav.contains(pressed)) endPress(true);
+ // Sample before cancelling an interrupted slide; grow from the painted rectangle.
+ navDrag.growFrom=navPillRect(nav,pill);navDrag.started=performance.now();
+ pill.getAnimations().forEach(a => a.cancel());navDrag.w=Math.max(1,nav.querySelector('button[aria-current=page]')?.offsetWidth||pill.offsetWidth);navDrag.h=Math.max(1,nav.clientHeight-12);navDrag.x=x;navDrag.on=true;
+ pill.style.width=navDrag.w+'px';pill.style.height=navDrag.h+'px';pill.style.transformOrigin='0 0';
+ nav.classList.add('dragging');haptic('tap');
+ try { nav.setPointerCapture(navDrag.id); } catch (error) {}
+ navDrag.scaleUntil=performance.now()+420;navDragFrame(nav);
+}
+function navDragFrame(nav) {
+ navDrag.frame=0;if(!navDrag.on)return;
+ navDragMove(nav,navDrag.x);
+ // 底栏鼓起期间补偿父缩放；稳定长按后只在真实移动时出帧。
+ if(performance.now()<navDrag.scaleUntil)navDrag.frame=requestAnimationFrame(()=>navDragFrame(nav));
+}
+function navDragEnd(nav,commit) {
+ clearTimeout(navDrag.timer);cancelAnimationFrame(navDrag.frame);navDrag.timer=navDrag.frame=0;
+ if (navDrag.on) navDragMove(nav,navDrag.x);
+ const was=navDrag.on,target=navDrag.over,id=navDrag.id,pill=nav.querySelector('.nav-pill'),from=was&&pill?navPillRect(nav,pill):null;
+ navDrag.id=null;navDrag.on=false;navDrag.over?.classList.remove('lens');navDrag.over=null;
+ try { if(id!=null&&navDrag.captureTarget?.hasPointerCapture(id))navDrag.captureTarget.releasePointerCapture(id); } catch(error) {}
+ navDrag.captureTarget=null;navDrag.growFrom=null;
+ try { if(id!=null&&nav.hasPointerCapture(id))nav.releasePointerCapture(id); } catch(error) {}
+ if (!was) return;
+ nav.classList.remove('dragging');navDrag.ate=commit?Date.now()+400:0;pillAt='';
+ // 保留松手时的可见矩形，再由同一条滑块弹簧归位；不能先抹掉 scale 跳回小胶囊。
+ if (from) { pill.style.width=from.w+'px';pill.style.height=from.h+'px';pill.style.transform='translate('+from.x+'px,'+from.y+'px)'; }
+ if (commit&&target&&target.dataset.page!==page) go(target.dataset.page);else movePill();
+}
+function bindNavDrag() {
+ const nav=$('#nav');if(!nav)return;
+ nav.addEventListener('pointerdown',e=>{
+  if(!e.isPrimary||e.button!==0||getComputedStyle(nav).position!=='fixed'||navDrag.id!=null||!nav.querySelector('.nav-pill'))return;
+  navDrag.id=e.pointerId;navDrag.x0=navDrag.x=e.clientX;navDrag.y0=e.clientY;navDrag.ate=0;navDrag.trackWidth=nav.offsetWidth;
+  // Capture the original button so a short tap retains its normal click target.
+  navDrag.captureTarget=e.target.closest?.('button[data-page]')||nav;
+  try { navDrag.captureTarget.setPointerCapture(e.pointerId); } catch(error) {}
+  navDrag.timer=setTimeout(()=>{if(navDrag.id===e.pointerId)navDragStart(nav,navDrag.x);},250);
+ });
+ nav.addEventListener('pointermove',e=>{
+  if(e.pointerId!==navDrag.id)return;
+  const dx=e.clientX-navDrag.x0,dy=e.clientY-navDrag.y0;navDrag.x=e.clientX;
+  if(!navDrag.on&&Math.abs(dy)>18&&Math.abs(dy)>Math.abs(dx)*1.5){navDragEnd(nav,false);endPress(true);return;}
+  if(!navDrag.on&&Math.abs(dx)>10){clearTimeout(navDrag.timer);navDragStart(nav,e.clientX);}
+  if(navDrag.on&&!navDrag.frame)navDrag.frame=requestAnimationFrame(()=>navDragFrame(nav));
+ });
+ window.addEventListener('pointerup',e=>{if(e.pointerId===navDrag.id){navDrag.x=e.clientX;navDragEnd(nav,true);}});
+ window.addEventListener('pointercancel',e=>{if(e.pointerId===navDrag.id)navDragEnd(nav,false);});
+ nav.addEventListener('lostpointercapture',e=>{if(e.target===nav&&e.pointerId===navDrag.id)navDragEnd(nav,false);});
+ window.addEventListener('blur',()=>navDragEnd(nav,false));
+ document.addEventListener('visibilitychange',()=>{if(document.hidden)navDragEnd(nav,false);});
+ window.addEventListener('resize',()=>{if(navDrag.id!=null&&nav.offsetWidth!==navDrag.trackWidth)navDragEnd(nav,false);});
+ nav.addEventListener('touchmove',e=>{if(navDrag.on&&e.cancelable)e.preventDefault();},{passive:false});
+ nav.addEventListener('contextmenu',e=>e.preventDefault());
+ for(const k of ['selectstart','contextmenu','dragstart'])document.addEventListener(k,e=>{if(navDrag.id!=null)e.preventDefault();},true);
+ // 只吞真实拖动后的兼容鼠标点击，键盘/无障碍的 detail=0 点击始终可达。
+ nav.addEventListener('click',e=>{if(e.detail>0&&Date.now()<navDrag.ate){navDrag.ate=0;e.preventDefault();e.stopPropagation();}},true);
+}
 
   // 按下反馈：安卓 WebView 的 :active 要等系统确认不是滑动才加上，快点一下几乎看不到。
   // 改成手指一碰就缩小，松手时按弹簧弹回；点完整页重画换掉了按钮，就在新按钮上接着播完剩下的回弹
@@ -936,7 +987,11 @@
   function renderTop() {
     const working = fetchSt === 'working';
     $('#progress').hidden = !working;
-    $('#refreshBtn').classList.toggle('spin', working);
+    const refreshButton = $('#refreshBtn');
+    refreshButton.classList.toggle('spin', working);
+    refreshButton.disabled = ['working', 'login', 'pick', 'room', 'offline'].includes(fetchSt);
+    refreshButton.setAttribute('aria-busy', String(working));
+    refreshButton.setAttribute('aria-label', working ? '正在刷新余额' : '刷新余额');
     $('#roomText').textContent = S.room || '未设置宿舍';
     const dot = $('#roomDot');
     dot.className = 'dot' + (S.lastFetch ? (Date.now() - S.lastFetch < 3 * HOUR ? ' ok' : ' warn') : '');
@@ -1068,6 +1123,8 @@
         if (H && H.setAutoLogin) H.setAutoLogin(!(S.login && S.login.auto)); else toast('请在安卓应用中设置自动登录');
         break;
       case 'refresh': refresh(); break;
+      case 'school': if (H && H.showSchool) H.showSchool(); break;
+      case 'cancel-query': if (H && H.cancel) H.cancel(); break;
       case 'quote': {
         const L = lines();
         quoteIdx = ((quoteIdx || 0) + 1) % L.length;
@@ -1242,7 +1299,7 @@
       'login-timeout': '学校登录响应太慢', session: '学校的登录状态没接上', 'form-timeout': '学校登录页没加载出来',
       'script-error': '自动登录出了点问题', script: '自动登录出了点问题', parse: '没读懂余额页，学校页面可能改版了',
       challenge: '学校要求验证码', rejected: '学校说账号或密码不对', login: '学校要求重新登录', pick: '需要重新选校区',
-      room: '需要重新填宿舍号', other: '学校页面跳到了没见过的地方', credentials: '本机保存的账号读不出来', webview: '系统网页组件出错', renderer: '学校网页已退出，请重试'
+      room: '需要重新填宿舍号', other: '学校页面跳到了没见过的地方', credentials: '本机保存的账号读不出来', storage: '余额已保存，但本机记录暂时无法显示', webview: '系统网页组件出错', renderer: '学校网页已退出，请重试'
     })[r] || '';
   }
   function failToast(r) {
@@ -1589,7 +1646,7 @@
 
   // ---------------- 原生回调 ----------------
   let fetchReason = '';
-  function onFetch(st, reason) {
+  function onFetch(st, reason, stateHandled) {
     const prev = fetchSt;
     fetchSt = st;
     if (reason != null) fetchReason = reason;
@@ -1606,7 +1663,7 @@
     else if (st === 'timeout' || st === 'error') { haptic('reject'); toast(failToast(fetchReason)); userRefresh = false; rechWatch = null; }
     else if (st === 'idle') { userRefresh = false; rechWatch = null; }
     else if (st === 'login' && prev !== 'login') toast('需要登录一下学校账号');
-    if (page === 'home' && A && A.cur == null) render();
+    if (!stateHandled && page === 'home' && A && A.cur == null) render();
   }
 
   // 刷新成功的提示带上和上一条读数的差
@@ -1619,29 +1676,64 @@
     return '已更新，余额没有变化';
   }
 
-  // 原生端每次回到应用、查完都会推一次完整状态；内容和上次一模一样时不整页重画（只刷新「×分钟前」这类文字），
-  // 停在统计页时走势图和日历也不用重新画
-  let lastSig = '';
+  // Render from one UiState. Progress/latency/revision changes never rebuild charts or settings.
+  function contentSignature(state) {
+    const { fetch, fetchStep, fetchReason, queryMs, queryRetries, queryId, stateRevision, ...content } = state || {};
+    // Submission count is diagnostic; it does not change page content.
+    if (content.login) { const { submitted, ...account } = content.login; content.login = account; }
+    return JSON.stringify(content);
+  }
+  function renderKeepingPosition() {
+    const x = scrollX, y = scrollY, focused = document.activeElement;
+    const key = focused && focused.closest('#content') ? ['id', 'data-act', 'data-v'].map(k => [k, focused.getAttribute(k)]).filter(e => e[1] != null) : [];
+    render();
+    if (key.length) {
+      const match = Array.from($('#content').querySelectorAll('button,input,select')).find(el => key.every(([k,v]) => el.getAttribute(k) === v));
+      if (match) match.focus({ preventScroll: true });
+    }
+    window.scrollTo(x, y);
+  }
+  let lastSig = '', lastFetchEvent = '', startupDone = false;
+  function completeStartup() {
+    if (startupDone || S.dataReady === false) return;
+    startupDone = true;
+    countOpen();
+    checkBadges();
+    checkRechargeReturn();
+    if (P().disclaimer !== DISCLAIMER_VER) setTimeout(() => { if (!$('#sheet').open) disclaimerSheet(true); }, 600);
+  }
   window.DF = {
     onState(o) {
-      const prefs = S.prefs, previousKey = S.storage && S.storage.activeKey, oldLegacy = legacyCount(), sig = JSON.stringify(o || {});
+      // Revision ordering applies only to the native stream; legacy browser fixtures omit it.
+      if (o && o.stateRevision != null && S.stateRevision != null && o.stateRevision < S.stateRevision) return;
+      const prefs = S.prefs, previousKey = S.storage && S.storage.activeKey, oldLegacy = legacyCount();
+      const previousFetch = fetchSt, sig = contentSignature(o);
       S = o || { hist: [] };
       if (previousKey !== (S.storage && S.storage.activeKey)) { historyLimit = 80; shown = null; shownLv = null; claiming = false; }
       if (claiming && legacyCount() < oldLegacy) { claiming = false; operationUI(); toast('旧记录已归属到当前宿舍'); }
       if (!S.prefs) S.prefs = prefs || {};
-      if (S.fetch && S.fetch !== fetchSt) fetchSt = S.fetch;
+      if (S.fetch) fetchSt = S.fetch;
       if (S.fetchReason != null) fetchReason = S.fetchReason;
-      if (sig === lastSig && !pendingRender) {
+      const emptyTransition = page === 'home' && A && A.cur == null && previousFetch !== fetchSt;
+      if (sig === lastSig && !pendingRender && !emptyTransition) {
         renderTop();
         const fl = $('#fetchLine');
         if (fl) fl.innerHTML = fetchLine();
       } else {
         lastSig = sig;
         applyTheme();
-        if ($('#sheet').open) { A = analyze(); pendingRender = true; } else render();
-        checkBadges();
+        if ($('#sheet').open) { A = analyze(); pendingRender = true; } else renderKeepingPosition();
+        if (startupDone) checkBadges();
       }
-      checkRechargeReturn();
+      const event = String(S.queryId || 0) + ':' + fetchSt;
+      if (event !== lastFetchEvent) {
+        lastFetchEvent = event;
+        // Effects consume the same snapshot as the balance; resumed/repeated snapshots do not repeat them.
+        fetchSt = previousFetch;
+        onFetch(S.fetch || 'idle', fetchReason, true);
+      }
+      completeStartup();
+      if (startupDone) checkRechargeReturn();
     },
     onFetch,
     onOperation: finishOperation,
@@ -1748,16 +1840,18 @@
       t += gap;
     }
     hist.push([Date.now() - 25 * 60e3, Math.round(b * 1e4) / 1e4]);
-    return { hist, room: '20#340', campus: '齐鲁工业大学长清校区', addr: '长清校区学生公寓.20#学生公寓.3楼.340', meter: '001600291874', status: '开户', lastFetch: Date.now() - 25 * 60e3, version: '1.0.0', prefs };
+    return { hist, room: '99#909', campus: '齐鲁工业大学长清校区', addr: '测试校区.99号楼.909', meter: 'DEMO-METER-001', status: '开户', lastFetch: Date.now() - 25 * 60e3, version: '1.0.0', prefs };
   }
   function demoRefresh() {
+    S.fetch = 'working';
+    S.queryId = (S.queryId || 0) + 1;
     onFetch('working');
     setTimeout(() => {
       const last = S.hist[S.hist.length - 1] || [Date.now(), 60];
       S.hist.push([Date.now(), Math.max(0, Math.round((last[1] - 0.37) * 1e4) / 1e4)]);
       S.lastFetch = Date.now();
-      window.DF.onState(S);
-      onFetch('ok');
+      S.fetch = 'ok';
+      window.DF.onState({ ...S });
     }, 1300);
   }
 
@@ -1783,12 +1877,11 @@
   }
 
   // ---------------- 启动 ----------------
-  if (H) { try { S = JSON.parse(H.getState()); lastSig = JSON.stringify(S); } catch (e) { S = { hist: [], prefs: {} }; } }
+  if (H) { try { S = JSON.parse(H.getState()); lastSig = contentSignature(S); } catch (e) { S = { hist: [], prefs: {} }; } }
   else S = demoState();
   if (!S.prefs) S.prefs = {};
   if (!H && /[?&]thanks/.test(location.search)) S.prefs.opens = JSON.stringify({ n: 99, first: Date.now() - 20 * DAY }); // 预览：模拟第 100 次
   fetchSt = S.fetch || 'idle';
-  countOpen();
   if (H) document.documentElement.classList.add('android');
   // 一直开着跨过零点：重算「今天 / 近 7 天 / 本月 / 一句话」（学伴 0.9.11）；开着弹窗就等关掉再画
   (function midnight() {
@@ -1800,7 +1893,5 @@
   bindMotion();
   bindSheetDrag();
   render(true);
-  checkBadges();
-  checkRechargeReturn(); // 去充值时应用被系统回收了：重新打开也照样看到账没有
-  if (P().disclaimer !== DISCLAIMER_VER) setTimeout(() => { if (!$('#sheet').open) disclaimerSheet(true); }, 600);
+  completeStartup();
 })();

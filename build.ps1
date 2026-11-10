@@ -1,10 +1,12 @@
 ﻿# 校园电费 App —— 手工打包脚本（零外部下载，全用本机已装工具）
 # 用法：.\build.ps1            发布包（WEB_DEBUG 必须为 false）
 #       .\build.ps1 -WebDebug  诊断包：临时打开 WebView 调试，输出 *-debug.apk，源码不改
-param([switch]$WebDebug)
+#       .\build.ps1 -DeviceDiagnostic  原包名诊断：保留本机账号，验证后须覆盖安装正式包
+param([switch]$WebDebug, [switch]$DeviceDiagnostic)
+if ($WebDebug -and $DeviceDiagnostic) { throw '两种诊断模式不能同时使用' }
+$enableWebDebug = $WebDebug -or $DeviceDiagnostic
 $ErrorActionPreference = "Stop"
 
-# JDK 17+：设置 JAVA_HOME，或改成你的 JDK 目录（例如 Android Studio 自带的 jbr）
 $JDK = if ($env:JAVA_HOME) { $env:JAVA_HOME } else { "C:\Program Files\Android\Android Studio\jbr" }
 $SDK   = $(if ($env:ANDROID_SDK_ROOT) { $env:ANDROID_SDK_ROOT } else { "$env:LOCALAPPDATA\Android\Sdk" })
 $BT    = "$SDK\build-tools\36.0.0"
@@ -24,19 +26,19 @@ $env:Path = "$JBR;$env:Path"
 
 # 清理 + 建目录
 $expectedBuild = [IO.Path]::GetFullPath((Join-Path $PROJ 'build'))
-if ([IO.Path]::GetFullPath($B) -ne $expectedBuild) { throw "拒绝清理项目以外的目录" }
+if ([IO.Path]::GetFullPath((Join-Path (Get-Location).ProviderPath $B)) -ne $expectedBuild) { throw "拒绝清理项目以外的目录" }
 if (Test-Path -LiteralPath $B) { Remove-Item -LiteralPath $B -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $B,"$B\gen","$B\obj","$B\dex" | Out-Null
 
 Write-Host "[1/7] 调试签名 debug.keystore（固定，不随 build 重建）"
-$ks = "$PROJ\debug.keystore"
+$ks = if ($env:DIANFEI_SIGNING_KEY) { $env:DIANFEI_SIGNING_KEY } else { "$PROJ\debug.keystore" }
 if (-not (Test-Path $ks)) {
     throw '固定升级签名丢失，拒绝自动生成新签名；请先恢复原 debug.keystore。'
 }
 
 Write-Host "[2/7] aapt2 compile 资源"
 $resDir = "$APP\res"
-if ($WebDebug) {
+if ($enableWebDebug) {
     # 诊断包换个名字，桌面上和正式版分得清
     $resDir = "$B\res-debug"
     Copy-Item "$APP\res" $resDir -Recurse
@@ -68,7 +70,7 @@ $debugLine = 'private static final boolean WEB_DEBUG = false;'
 if (-not (Select-String -LiteralPath $mainSrc -SimpleMatch $debugLine -Quiet)) {
     throw "MainActivity.java 里的 WEB_DEBUG 不是 false：发布包不能开 WebView 调试。诊断请用 .\build.ps1 -WebDebug"
 }
-if ($WebDebug) {
+if ($enableWebDebug) {
     # 诊断包：在 build 目录里复制一份源码再打开调试开关，工作区源码保持 false
     $srcDir = "$B\src-debug"
     Copy-Item "$APP\src" $srcDir -Recurse
@@ -97,7 +99,7 @@ if ($LASTEXITCODE -ne 0) { throw "aapt add dex 失败" }
 Write-Host "[7/7] zipalign + 签名"
 & "$BT\zipalign.exe" -f -p 4 "$B\app.unaligned.apk" "$B\app.aligned.apk"
 if ($LASTEXITCODE -ne 0) { throw "zipalign 失败" }
-$out = if ($WebDebug) { "$B\校园电费-$ver-debug.apk" } else { "$B\校园电费-$ver.apk" }
+$out = if ($DeviceDiagnostic) { "$B\校园电费-$ver-device-diagnostic.apk" } elseif ($WebDebug) { "$B\校园电费-$ver-debug.apk" } else { "$B\校园电费-$ver.apk" }
 & "$BT\apksigner.bat" sign --ks $ks --ks-pass pass:android --key-pass pass:android --out $out "$B\app.aligned.apk"
 if ($LASTEXITCODE -ne 0) { throw "apksigner 失败" }
 

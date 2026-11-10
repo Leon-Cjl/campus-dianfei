@@ -1,7 +1,7 @@
 // Offline real-Chromium acceptance. Native is a synthetic fixture, never a school account.
-const { chromium } = require(process.env.PLAYWRIGHT_CORE || 'D:/AI/_tools/mcp/rea/node_modules/playwright-core');
+const { chromium } = require(process.env.PLAYWRIGHT_CORE || 'playwright-core');
 const fs = require('node:fs'), path = require('node:path'), http = require('node:http'), assert = require('node:assert/strict');
-const root = path.resolve(__dirname, '..'), out = path.join(root, 'qa', '1.8.1');
+const root = path.resolve(__dirname, '..'), out = process.env.QA_OUTPUT || path.join(root, 'qa', '1.8.1');
 const D = 864e5, H = 36e5;
 (async () => {
   fs.mkdirSync(out, { recursive: true });
@@ -17,7 +17,7 @@ const D = 864e5, H = 36e5;
   const check = (name, ok) => { assert.ok(ok, name); checks.push(name); };
   async function scene(hist, extra = {}) {
     const context = await browser.newContext({ viewport: { width: 393, height: 852 }, deviceScaleFactor: 1.5, isMobile: true, hasTouch: true });
-    const state = { hist, room: '20#340', campus: '测试校区', meter: 'fixture-meter', version: '1.8.1-test', lastFetch: hist.at(-1)?.[0] || 0, notifyAllowed: true, login: {}, fetch: 'idle', storage: { legacyCount: 0, archiveCount: 1 }, prefs: { disclaimer: '2', motion: 'off', thanks: '{"never":true}', notifyAsked: '1' }, ...extra };
+    const state = { hist, room: '99#909', campus: '测试校区', meter: 'fixture-meter', version: '1.8.1-test', lastFetch: hist.at(-1)?.[0] || 0, notifyAllowed: true, login: {}, fetch: 'idle', storage: { legacyCount: 0, archiveCount: 1 }, prefs: { disclaimer: '2', motion: 'off', thanks: '{"never":true}', notifyAsked: '1' }, ...extra };
     await context.addInitScript(s => {
       window.fixture = s;
       const calls = window.nativeCalls = [];

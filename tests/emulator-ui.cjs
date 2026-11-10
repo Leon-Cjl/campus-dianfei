@@ -1,5 +1,5 @@
 // Android WebView acceptance with synthetic UI state. No school/account values are read.
-const { chromium } = require(process.env.PLAYWRIGHT_CORE || 'D:/AI/_tools/mcp/rea/node_modules/playwright-core');
+const { chromium } = require(process.env.PLAYWRIGHT_CORE || 'playwright-core');
 const {execFileSync} = require('node:child_process');
 const path = require('node:path'), fs = require('node:fs'), assert = require('node:assert/strict');
 const adbPath = 'C:/Users/cui/AppData/Local/Android/Sdk/platform-tools/adb.exe';

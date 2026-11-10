@@ -62,12 +62,11 @@ final class Core {
     // 每 0.6 秒看一次当前在哪一步，能自动推进就推进，推进不了就报告需要用户操作。
     // 只会点「校区」卡片和「下一步」，余额页只读文字，不碰金额输入和「立即支付」；登录页报告状态，由原生端按本机账号设置决定是否自动登录。
     static boolean isSchoolUrl(String url) {
-        if (url == null) return false;
-        try {
-            Uri u = Uri.parse(url);
-            return "https".equalsIgnoreCase(u.getScheme()) && "qlgydx.mp.sinojy.cn".equalsIgnoreCase(u.getHost())
-                    && u.getUserInfo() == null && (u.getPort() == -1 || u.getPort() == 443);
-        } catch (Exception ex) { return false; }
+        return SchoolNavigationPolicy.school(url);
+    }
+
+    static boolean isSchoolNavigation(String url) {
+        return SchoolNavigationPolicy.navigate(url);
     }
 
     static boolean isSchoolLogin(String url) {
@@ -90,7 +89,8 @@ final class Core {
         try {
             if (driverScript == null) driverScript = asset(c, "driver.js");
             SharedPreferences p = sp(c);
-            String config = "window.__DF_RUN__=" + JSONObject.quote(token) +
+            String config = "window.__DF_EXPECTED_URL__=" + JSONObject.quote(w.getUrl()) +
+                    ";window.__DF_RUN__=" + JSONObject.quote(token) +
                     ";window.__DF_ROOM__=" + JSONObject.quote(p.getString("room", "")) +
                     ";window.__DF_CAMPUS__=" + JSONObject.quote(p.getString("campus", "")) + ";";
             w.evaluateJavascript(config + driverScript, null);

@@ -378,3 +378,8 @@ html[data-motion=off] .mini-spin,html[data-motion=off] .icon-btn.spin .icon{anim
 .legacy-notice{margin-bottom:14px;padding:12px;border-radius:14px;background:var(--warn-soft)}
 .legacy-notice .hint{color:var(--text)}
 .operation-status{min-height:1.5em;margin:10px 0}
+
+/* 1.9.1: long-press geometry is animated in JS; touch jitter must not become page scrolling. */
+.nav{touch-action:none}
+.nav .icon{transition:transform .18s var(--ease-out)}
+.nav-pill{transition:box-shadow .18s var(--ease-out),background-color .18s var(--ease-out)}

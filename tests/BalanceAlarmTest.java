@@ -9,8 +9,9 @@ public final class BalanceAlarmTest {
         money("−12.5001 元", "-12.5001");
         money("￥12.0001", "12.0001");
         money(" 12.5 CNY ", "12.5");
+        money("55.636137 元", "55.636137");
         money("-0.0001", "-0.0001");
-        for (String bad : new String[]{"12.5度","12 kWh","12 USD","12.5 13","余额12元","12.00001元","NaN","Infinity","--2元","1,234.50元","1e4元"}) {
+        for (String bad : new String[]{"12.5度","12 kWh","12 USD","12.5 13","余额12元","12.0000001元","NaN","Infinity","--2元","1,234.50元","1e4元"}) {
             boolean rejected = false;
             try { BalanceParser.parse(bad, BalanceParser.SCHOOL_CNY); } catch (IllegalArgumentException e) { rejected = true; }
             check(rejected, "strict rejection: " + bad);

@@ -27,9 +27,9 @@ if (require.main === module) (async () => {
       if (process.argv[2] === 'refresh') await evaluate(page, "document.getElementById('refreshBtn').click(); true");
       console.log('local', await evaluate(page, `(() => {
       const s = JSON.parse(Native.getState());
-      return JSON.stringify({version:s.version,fetch:s.fetch,login:{saved:s.login.saved,auto:s.login.auto,unavailable:!!s.login.unavailable},records:s.hist.length,roomSaved:!!s.room});
+      return JSON.stringify({version:s.version,fetch:s.fetch,step:s.fetchStep,reason:s.fetchReason,login:{saved:s.login.saved,auto:s.login.auto,unavailable:!!s.login.unavailable},records:s.hist.length,roomSaved:!!s.room});
     })()`)); }
-    else if (/qlgydx\.mp\.sinojy\.cn/.test(page.url)) console.log('school', await evaluate(page, `JSON.stringify({path:location.pathname,ready:document.readyState,driver:!!window.__DF_DRIVER__,trace:(window.__DF_TRACE||[]).slice(-12),inputs:[...document.querySelectorAll('input')].map(e=>({id:e.id,type:e.type,visible:!!e.getClientRects().length,filled:!!e.value})),buttons:[...document.querySelectorAll('button')].map(e=>({text:e.textContent,disabled:e.disabled})),hasSession:!!sessionStorage.getItem('loginData'),popup:[...document.querySelectorAll('.za-alert__body,.za-toast__text,.ant-message-notice-content')].map(e=>e.textContent)})`));
+    else if (/qlgydx\.mp\.sinojy\.cn/.test(page.url)) console.log('school', await evaluate(page, `JSON.stringify({path:location.pathname,ready:document.readyState,driver:!!window.__DF_DRIVER__,readingStatus:window.__DF_READ_STATUS__||null,trace:(window.__DF_TRACE||[]).slice(-12),inputs:[...document.querySelectorAll('input')].map(e=>({id:e.id,type:e.type,visible:!!e.getClientRects().length,filled:!!e.value})),buttons:[...document.querySelectorAll('button')].map(e=>({text:e.textContent,disabled:e.disabled})),hasSession:!!sessionStorage.getItem('loginData'),popup:[...document.querySelectorAll('.za-alert__body,.za-toast__text,.ant-message-notice-content')].map(e=>e.textContent)})`));
     else console.log('page', new URL(page.url).pathname);
   }
 })().catch(e => { console.error(e.message); process.exitCode = 1; });

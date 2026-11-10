@@ -27,6 +27,7 @@ function page(options = {}) {
   const errorElements = [];
   const ready = () => now - 100000 >= (options.formDelay || 0);
   const document = {
+    readyState: options.readyState || 'complete',
     getElementById(id){return ready() ? form.find(e=>e.id===id) : null;},
     querySelectorAll(selector){
       if(selector==='input')return ready() ? form.concat(inputs) : inputs;
@@ -38,7 +39,7 @@ function page(options = {}) {
     removeEventListener(type,handler){if(type==='input')handlers.delete(handler);else clicks.delete(handler);}
   };
   const schedule = (fn,ms,interval=0) => {const id=next++;tasks.set(id,{fn,due:now+ms,interval});return id;};
-  const context = {document,location,HTMLInputElement:Input,Event:class{constructor(type){this.type=type;this.isTrusted=false;}},
+  const context = {URL,document,location,HTMLInputElement:Input,Event:class{constructor(type){this.type=type;this.isTrusted=false;}},
     Date:class extends Date{static now(){return now;}},
     setTimeout:(fn,ms)=>schedule(fn,ms),clearTimeout:id=>tasks.delete(id),
     setInterval:(fn,ms)=>schedule(fn,ms,ms),clearInterval:id=>tasks.delete(id),
@@ -63,7 +64,7 @@ function page(options = {}) {
     edit(){form[1].value='MANUAL_EDIT';for(const handler of [...handlers])handler({target:form[1],isTrusted:true});},
     matchingAutofill(){for(const handler of [...handlers])handler({target:form[1],isTrusted:true});},
     manualClick(){for(const handler of [...clicks])handler({target:{closest:()=>button},isTrusted:true});},
-    runDriver(token){context.__DF_RUN__=token;return vm.runInContext(driver,context);}};
+    runDriver(token,expected){context.__DF_RUN__=token;context.__DF_EXPECTED_URL__=expected;return vm.runInContext(driver,context);}};
 }
 
 test('fills React inputs, settles, submits exactly once and releases credentials',()=>{
@@ -94,3 +95,36 @@ test('navigation cancels a pending submit',()=>{const p=page();p.run();p.locatio
 test('driver requests relogin for an expired session without home-page throttling',()=>{const p=page({location:{pathname:'/SL320000'}});p.runDriver('Q1');assert.equal(p.events[0].state,'need-login');p.runDriver('Q2');p.advance(600);assert.ok(p.events.some(e=>e.token==='Q2'&&e.state==='need-login'));});
 test('driver reuses a session and tags callbacks with the current query',()=>{const p=page({session:true,location:{pathname:'/SL320000'}});p.runDriver('Q1');assert.deepEqual(p.events.map(e=>e.state),['authenticated','pick']);p.runDriver('Q2');const count=p.events.length;p.advance(600);assert.ok(p.events.slice(count).every(e=>e.token==='Q2'));});
 test('stopping driver removes its polling task',()=>{const p=page();p.runDriver('Q');p.context.__DF_STOP_DRIVER__();const count=p.events.length;p.advance(5000);assert.equal(p.events.length,count);assert.equal(p.tasks.size,0);});
+
+
+test('covered page probes wait for DOM readiness then start without a visible-commit event',()=>{
+ const p=page({readyState:'loading'}),url=p.location.href;
+ p.runDriver('HIDDEN:1',url);assert.equal(p.events.length,0);assert.equal(p.tasks.size,0);assert.equal(p.context.__DF_DRIVER__,undefined);
+ p.context.document.readyState='interactive';p.runDriver('HIDDEN:1',url);
+ assert.equal(p.events.at(-1).state,'login');assert.equal(p.events.at(-1).token,'HIDDEN:1');
+});
+test('a stale onPageFinished cannot install a new driver into the old document',()=>{
+ const p=page({location:{pathname:'/',href:'https://qlgydx.mp.sinojy.cn/'}}),target='https://qlgydx.mp.sinojy.cn/SL200000';
+ p.runDriver('NEW:2',target);assert.equal(p.events.length,0);assert.equal(p.tasks.size,0);
+ p.location.pathname='/SL200000';p.location.href=target;p.runDriver('NEW:2',target);
+ assert.equal(p.events.at(-1).state,'login');assert.equal(p.events.at(-1).token,'NEW:2');
+});
+test('repeated native readiness probes do not duplicate driver timers or login notifications',()=>{
+ const p=page();p.runDriver('POLL:1',p.location.href);const tasks=p.tasks.size;
+ for(let i=0;i<100;i++)p.runDriver('POLL:1',p.location.href);
+ assert.equal(p.tasks.size,tasks);assert.equal(p.events.filter(e=>e.state==='login').length,1);
+ p.context.__DF_STOP_DRIVER__();assert.equal(p.tasks.size,0);
+});
+test('homepage to login SPA navigation progresses even with no document commit callback',()=>{
+ const p=page({location:{pathname:'/',href:'https://qlgydx.mp.sinojy.cn/'}});
+ p.runDriver('SPA:1',p.location.href);assert.equal(p.events.at(-1).state,'working');
+ p.location.pathname='/SL200000';p.location.href='https://qlgydx.mp.sinojy.cn/SL200000';
+ p.runDriver('SPA:1',p.location.href);p.advance(800);
+ assert.equal(p.events.at(-1).state,'login');assert.equal(p.events.at(-1).token,'SPA:1');
+});
+
+test('native URLs with an explicit default HTTPS port match the same login document',()=>{
+ const p=page();
+ p.runDriver('PORT:1','https://qlgydx.mp.sinojy.cn:443/SL200000');
+ assert.equal(p.events.at(-1).state,'login');
+});

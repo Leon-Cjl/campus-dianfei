@@ -127,7 +127,7 @@ final class BgQuery {
             w.addJavascriptInterface(new Driver(), "DF");
             w.setWebViewClient(new WebViewClient() {
                 @Override public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) {
-                    return !Core.isSchoolUrl(r.getUrl().toString());
+                    return !Core.isSchoolNavigation(r.getUrl().toString());
                 }
                 @Override public void onPageStarted(WebView v, String url, android.graphics.Bitmap icon) {
                     if (!finished) token = "bg:" + (++doc);
@@ -206,7 +206,7 @@ final class BgQuery {
         private void onResult(String json) {
             try {
                 if (!QueryGate.valid(ticket)) { finish(YIELDED); return; }
-                Core.saveResult(c, json);
+                ElectricityRepository.saveResult(c, ticket, json);
                 Core.clearActionNotice(c);
                 finish(OK);
             } catch (Exception ex) { finish(FAIL + ":parse"); }
