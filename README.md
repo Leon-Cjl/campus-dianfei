@@ -2,9 +2,11 @@
 
 # ⚡ 校园电费
 
+<img src="docs/readme-banner-20261110.png" alt="校园电费宣传图：蓝色校园、电费趋势与闪电形象" width="100%" />
+
 **齐鲁工业大学宿舍电费查询 · 用电统计 · 低余额提醒 · 桌面小组件**
 
-<img src="https://img.shields.io/badge/版本-1.8.1-blue?style=flat-square" />
+<img src="https://img.shields.io/badge/版本-1.9.4-blue?style=flat-square" />
 <img src="https://img.shields.io/badge/platform-Android-green?style=flat-square&logo=android&logoColor=white" />
 <img src="https://img.shields.io/badge/language-Java-red?style=flat-square&logo=java&logoColor=white" />
 <img src="https://img.shields.io/badge/license-MIT-yellow?style=flat-square" />
